@@ -229,12 +229,14 @@ cd frontend && npm run dev
 ```
 
 ---
+##
+The link for the models:
+https://drive.google.com/drive/folders/1t4vNpcFBsSUKFyJM1AHC3y-hvOp33VTm?usp=sharing
 
 ## Research Context
 
 This project is developed for an IEEE conference/journal paper on
-hybrid phishing URL detection. See:
-
+hybrid phishing URL detection. 
 
 
 ---
