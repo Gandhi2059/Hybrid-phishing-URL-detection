@@ -235,9 +235,7 @@ cd frontend && npm run dev
 This project is developed for an IEEE conference/journal paper on
 hybrid phishing URL detection. See:
 
-- `ieee_paper/methodology.md` — Full methodology section
-- `details.md` — Outstanding IEEE readiness items
-- `graphs/` — All generated figures (PNG + SVG + PDF)
+
 
 ---
 
