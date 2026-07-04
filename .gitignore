@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Data files (large — store externally or in DVC)
+data/features.csv
+data/urls.csv
+data/urldata.csv
+data/phishing_site_urls.csv
+data/phishing_siteurls.csv
+data/*.zip
+
+# Trained model artifacts (large — store externally or in DVC)
+models/*.pkl
+
+# Generated graphs (reproducible from pipeline)
+graphs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment files
+.env
+.env.local
+
+# Frontend build output
+frontend/node_modules/
+frontend/dist/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

@@ -1,0 +1,33 @@
+# Core ML & data
+numpy==1.26.4
+pandas==2.2.1
+scikit-learn==1.4.1.post1
+xgboost==2.0.3
+
+# NLP / feature engineering (included in scikit-learn, listed for clarity)
+# scikit-learn already provides TfidfVectorizer
+
+# Visualisation
+matplotlib==3.8.3
+seaborn==0.13.2
+
+# Explainability
+shap
+
+# Backend API
+fastapi
+uvicorn[standard]
+pydantic>=2.0
+cachetools
+
+# Streamlit UI
+streamlit==1.32.2
+
+# Utilities
+requests==2.31.0
+tldextract==5.1.2
+
+# Testing
+pytest
+pytest-asyncio
+httpx          # needed by FastAPI TestClient
