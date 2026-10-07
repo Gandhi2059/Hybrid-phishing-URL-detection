@@ -238,6 +238,10 @@ https://drive.google.com/drive/folders/1t4vNpcFBsSUKFyJM1AHC3y-hvOp33VTm?usp=sha
 This project is developed for an IEEE conference/journal paper on
 hybrid phishing URL detection. 
 
+## Dataset and Project Archive
+
+https://doi.org/10.5281/zenodo.23141305
+
 
 ---
 
