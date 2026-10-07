@@ -35,8 +35,7 @@ import xgboost as xgb
 # CONFIG — UPDATE THIS
 # ─────────────────────────────────────────────────────────────────────────────
 print("Datasets available:", os.listdir("/kaggle/input"))
-
-DATASET_SLUG = "phishing-urls-raw"          # <-- change to your folder name
+DATASET_SLUG = "datasets/gandhirajgiri/shield"  # <-- updated to match your path
 URLS_CSV     = f"/kaggle/input/{DATASET_SLUG}/urls.csv"
 OUT_DIR      = "/kaggle/working/models"
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -129,60 +128,85 @@ print("  TF-IDF vectorizer saved.")
 # STEP 3 — 5-Fold Stratified Cross-Validation
 # Imbalance fix: class_weight='balanced' (RF/SVM), scale_pos_weight (XGBoost)
 # ─────────────────────────────────────────────────────────────────────────────
-print("\n[4/5] Running 5-fold stratified cross-validation...")
+print("\n[4/5] Running STRICT fold-isolated 5-fold stratified cross-validation...")
 cv         = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 cv_results = []
 cv_preds   = {}
 
-def run_cv(model, name: str) -> None:
-    print(f"\n  ▶ {name}...")
+urls_np = df["url"].to_numpy()
+y_np = y.to_numpy()
+lex_np = lex.to_numpy()
+
+def run_cv_strict(model_name: str, get_model_fn) -> None:
+    print(f"\n  ▶ {model_name}...")
     t0    = time.time()
-    preds = cross_val_predict(model, X, y, cv=cv, n_jobs=-1)
+    preds = np.zeros(len(y_np), dtype=int)
+    
+    for fold, (tr_idx, te_idx) in enumerate(cv.split(lex_np, y_np), 1):
+        y_tr, y_te = y_np[tr_idx], y_np[te_idx]
+        
+        # 1. Strict Fold-Isolated TF-IDF
+        tfidf = TfidfVectorizer(max_features=MAX_TFIDF, analyzer="char", ngram_range=(3, 5))
+        tfidf_tr = tfidf.fit_transform(urls_np[tr_idx]).toarray()
+        tfidf_te = tfidf.transform(urls_np[te_idx]).toarray()
+        
+        # 2. Combine Handcrafted + TF-IDF
+        X_tr = np.hstack([lex_np[tr_idx], tfidf_tr])
+        X_te = np.hstack([lex_np[te_idx], tfidf_te])
+        
+        # 3. Dynamic scale_pos_weight for XGBoost
+        spw_fold = round((y_tr == 0).sum() / (y_tr == 1).sum(), 4)
+        
+        # 4. Strict Fold-Isolated StandardScaler
+        scaler = StandardScaler()
+        X_tr_scaled = scaler.fit_transform(X_tr)
+        X_te_scaled = scaler.transform(X_te)
+        
+        # Train & Predict
+        model = get_model_fn(spw_fold)
+        if "SVM" in model_name:
+            model.fit(X_tr_scaled, y_tr)
+            preds[te_idx] = model.predict(X_te_scaled)
+        else:
+            model.fit(X_tr, y_tr)
+            preds[te_idx] = model.predict(X_te)
+            
     r = {
-        "Model":     name,
-        "Accuracy":  accuracy_score(y, preds),
-        "Precision": precision_score(y, preds, zero_division=0),
-        "Recall":    recall_score(y, preds, zero_division=0),
-        "F1-Score":  f1_score(y, preds, zero_division=0),
-        "F1-Macro":  f1_score(y, preds, average="macro", zero_division=0),
+        "Model":     model_name,
+        "Accuracy":  accuracy_score(y_np, preds),
+        "Precision": precision_score(y_np, preds, zero_division=0),
+        "Recall":    recall_score(y_np, preds, zero_division=0),
+        "F1-Score":  f1_score(y_np, preds, zero_division=0),
+        "F1-Macro":  f1_score(y_np, preds, average="macro", zero_division=0),
     }
     print(f"     Time={time.time()-t0:.1f}s | Acc={r['Accuracy']:.4f} | "
           f"Recall={r['Recall']:.4f} | F1={r['F1-Score']:.4f}")
     cv_results.append(r)
-    cv_preds[name] = preds
+    cv_preds[model_name] = preds
 
-# Random Forest — class_weight='balanced'
-run_cv(
-    RandomForestClassifier(
-        n_estimators=200, n_jobs=-1, random_state=42,
-        class_weight="balanced",        # handles 3.4:1 imbalance
-    ),
+# Random Forest
+run_cv_strict(
     "Random Forest",
+    lambda spw: RandomForestClassifier(
+        n_estimators=200, n_jobs=-1, random_state=42, class_weight="balanced"
+    )
 )
 
-# XGBoost — scale_pos_weight (XGBoost's equivalent of class_weight='balanced')
-run_cv(
-    xgb.XGBClassifier(
-        n_estimators=300, eval_metric="logloss",
-        n_jobs=-1, random_state=42, verbosity=0,
-        scale_pos_weight=SPW,           # handles 3.4:1 imbalance
-    ),
+# XGBoost
+run_cv_strict(
     "XGBoost",
+    lambda spw: xgb.XGBClassifier(
+        n_estimators=300, eval_metric="logloss", n_jobs=-1, random_state=42, 
+        verbosity=0, scale_pos_weight=spw, tree_method="hist", device="cuda"
+    )
 )
 
-# SVM — class_weight='balanced'
-run_cv(
-    Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", CalibratedClassifierCV(
-            LinearSVC(
-                dual=False, max_iter=2000, random_state=42,
-                class_weight="balanced",  # handles 3.4:1 imbalance
-            ),
-            cv=3,
-        )),
-    ]),
+# SVM
+run_cv_strict(
     "SVM (LinearSVC)",
+    lambda spw: CalibratedClassifierCV(
+        LinearSVC(dual=False, max_iter=2000, random_state=42, class_weight="balanced"), cv=3
+    )
 )
 
 # Summary table
@@ -252,7 +276,7 @@ for model, name, fname in [
         xgb.XGBClassifier(
             n_estimators=300, eval_metric="logloss",
             n_jobs=-1, random_state=42, verbosity=0,
-            scale_pos_weight=SPW,
+            scale_pos_weight=SPW, tree_method="hist", device="cuda"
         ),
         "XGBoost", "xgb_model.pkl",
     ),

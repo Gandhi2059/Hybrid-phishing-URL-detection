@@ -114,7 +114,7 @@ function App() {
 
           <div className="breakdown-grid">
             <div className="stat-box">
-              <div className="stat-label">ML Neural Confidence</div>
+              <div className="stat-label">ML Model Confidence</div>
               <div className="stat-value">{Math.round(result.ml_probability * 100)}%</div>
             </div>
             <div className="stat-box">

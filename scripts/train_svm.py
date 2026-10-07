@@ -44,9 +44,9 @@ def train_svm(data_path: str, model_path: str, max_iter: int = 2000, random_stat
 
     scaler     = StandardScaler()
     X_scaled   = scaler.fit_transform(X)
-    base_model = LinearSVC(dual=False, max_iter=max_iter, random_state=random_state,
+    base_model = LinearSVC(loss="squared_hinge", dual=False, max_iter=max_iter, random_state=random_state,
                            class_weight="balanced")  # corrects 3.4:1 legit:phishing imbalance
-    model      = CalibratedClassifierCV(base_model, cv=5)
+    model      = CalibratedClassifierCV(base_model, cv=3)
     model.fit(X_scaled, y)
 
     os.makedirs(os.path.dirname(os.path.abspath(model_path)), exist_ok=True)

@@ -29,7 +29,7 @@ from src.rule_engine import RuleEngine
 # ── Arguments ─────────────────────────────────────────────────────────────── #
 parser = argparse.ArgumentParser()
 parser.add_argument("--data", default="data/features.csv", help="Path to features CSV")
-parser.add_argument("--n-samples", type=int, default=20000, help="Number of sample URLs to evaluate")
+parser.add_argument("--n-samples", type=int, default=0, help="0 = full 50k benchmark; >0 = subsample")
 args = parser.parse_args()
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -38,11 +38,23 @@ GRAPHS_DIR = os.path.join(ROOT, "graphs")
 os.makedirs(GRAPHS_DIR, exist_ok=True)
 
 def main():
-    print(f"Loading first {args.n_samples:,} rows from {args.data}...")
-    df = pd.read_csv(os.path.join(ROOT, args.data), nrows=args.n_samples)
+    print(f"Loading full features from {args.data}...")
+    df_full = pd.read_csv(os.path.join(ROOT, args.data))
     
-    # We already have at most args.n_samples rows
-    df = df.reset_index(drop=True)
+    # Stratified 50,000 subsample matching the paper's benchmark dataset
+    TARGET_N = 50_000
+    df = df_full.groupby("label", group_keys=False).apply(
+        lambda grp: grp.sample(
+            n=min(int(round(TARGET_N * len(grp) / len(df_full))), len(grp)),
+            random_state=42
+        )
+    ).sample(frac=1, random_state=42).reset_index(drop=True)
+
+    if args.n_samples > 0 and args.n_samples < len(df):
+        print(f"Subsampling to {args.n_samples:,} rows...")
+        df = df.sample(n=args.n_samples, random_state=42).reset_index(drop=True)
+
+    print(f"Benchmark dataset ready: {len(df):,} URLs ({int((df['label']==0).sum()):,} legit, {int((df['label']==1).sum()):,} phishing)")
     
     urls = df["url"].tolist()
     y = df["label"].values
@@ -51,62 +63,76 @@ def main():
     # Initialize Rule Engine
     rule_engine = RuleEngine()
     print("Evaluating URLs against deterministic rules...")
-    # Pre-calculate rule scores for all sample URLs
     rule_scores = np.array([rule_engine.evaluate(url)[0] for url in urls])
 
     # Weights to sweep
     weights = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]
-    
-    MODELS = [
-        ("SVM", os.path.join(MODELS_DIR, "svm_model.pkl")),
-        ("Random Forest", os.path.join(MODELS_DIR, "rf_model.pkl")),
-        ("XGBoost", os.path.join(MODELS_DIR, "xgb_model.pkl")),
-    ]
 
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.svm import LinearSVC
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    import xgboost as xgb
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    models_to_run = ["SVM", "Random Forest", "XGBoost"]
     all_results = []
+    
+    # Drop globally-fitted TF-IDF features to prevent leakage; we compute them strictly per-fold
+    tfidf_cols = [c for c in X.columns if c.startswith("tfidf_")]
+    X_base = X.drop(columns=tfidf_cols)
+    urls_np = np.array(urls)
 
-    for model_name, model_path in MODELS:
-        if not os.path.exists(model_path):
-            print(f"  [{model_name}] model not found at {model_path}, skipping.")
-            continue
-        
-        print(f"Running ablation sweep for model: {model_name}...")
-        with open(model_path, "rb") as f:
-            payload = pickle.load(f)
+    for model_name in models_to_run:
+        print(f"Running 5-fold strictly isolated out-of-fold ablation sweep for: {model_name}...")
+        oof_ml_probs = np.zeros(len(y), dtype=float)
 
-        # Handle data scaling for SVM
-        if model_name == "SVM":
-            if isinstance(payload, dict):
-                model = payload["model"]
-                scaler = payload["scaler"]
-                features_to_use = getattr(scaler, "feature_names_in_", getattr(model, "feature_names_in_", None))
-                X_eval = X[list(features_to_use)] if features_to_use is not None else X
-                X_eval = scaler.transform(X_eval)
-            else:
-                model = payload
-                features_to_use = getattr(model, "feature_names_in_", None)
-                X_eval = X[list(features_to_use)] if features_to_use is not None else X
-        else:
-            model = payload
-            features_to_use = getattr(model, "feature_names_in_", None)
-            X_eval = X[list(features_to_use)] if features_to_use is not None else X
+        for fold, (tr_idx, te_idx) in enumerate(cv.split(X_base, y), 1):
+            X_tr_base, X_te_base = X_base.iloc[tr_idx], X_base.iloc[te_idx]
+            y_tr = y[tr_idx]
 
-        # Get batch predictions probability from ML model
-        # predict_proba returns [prob_legitimate, prob_phishing]
-        ml_probs = model.predict_proba(X_eval)[:, 1]
+            # 1. Strict Fold-Isolated TF-IDF
+            tfidf = TfidfVectorizer(max_features=100, analyzer="char", ngram_range=(3, 5))
+            tfidf_tr = tfidf.fit_transform(urls_np[tr_idx]).toarray()
+            tfidf_te = tfidf.transform(urls_np[te_idx]).toarray()
+
+            # 2. Combine handcrafted + TF-IDF
+            X_tr = np.hstack([X_tr_base.to_numpy(), tfidf_tr])
+            X_te = np.hstack([X_te_base.to_numpy(), tfidf_te])
+
+            # 3. Dynamic scale_pos_weight
+            neg = (y_tr == 0).sum()
+            pos = (y_tr == 1).sum()
+            spw = round(neg / pos, 4)
+
+            # 4. Strict Fold-Isolated StandardScaler
+            scaler = StandardScaler()
+            X_tr_scaled = scaler.fit_transform(X_tr)
+            X_te_scaled = scaler.transform(X_te)
+
+            if model_name == "SVM":
+                clf = CalibratedClassifierCV(LinearSVC(loss="squared_hinge", dual=False, max_iter=2000, class_weight="balanced", random_state=42), cv=3)
+                clf.fit(X_tr_scaled, y_tr)
+                oof_ml_probs[te_idx] = clf.predict_proba(X_te_scaled)[:, 1]
+            elif model_name == "Random Forest":
+                clf = RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42, n_jobs=-1)
+                clf.fit(X_tr, y_tr)
+                oof_ml_probs[te_idx] = clf.predict_proba(X_te)[:, 1]
+            elif model_name == "XGBoost":
+                clf = xgb.XGBClassifier(n_estimators=300, eval_metric="logloss", scale_pos_weight=spw, random_state=42, n_jobs=-1, verbosity=0)
+                clf.fit(X_tr, y_tr)
+                oof_ml_probs[te_idx] = clf.predict_proba(X_te)[:, 1]
 
         for w in weights:
-            # Bounded addition fusion formula: hybrid_prob = min(ml_prob + rule_score * rule_weight, 1.0)
-            hybrid_probs = np.minimum(ml_probs + rule_scores * w, 1.0)
-            
-            # Prediction decision boundary
+            hybrid_probs = np.minimum(oof_ml_probs + rule_scores * w, 1.0)
             preds = (hybrid_probs >= 0.5).astype(int)
 
-            # Compute metrics
             acc = accuracy_score(y, preds)
-            f1 = f1_score(y, preds)
+            f1 = f1_score(y, preds, zero_division=0)
             cm = confusion_matrix(y, preds)
-            
             tn, fp, fn, tp = cm.ravel()
             fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
             fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
@@ -124,13 +150,11 @@ def main():
                 "FN": fn
             })
 
-    # Save to CSV
     results_df = pd.DataFrame(all_results)
     csv_path = os.path.join(GRAPHS_DIR, "ablation_rule_weight.csv")
     results_df.to_csv(csv_path, index=False)
-    print(f"✔ Saved raw metrics to {csv_path}")
+    print(f"✔ Saved out-of-fold ablation metrics to {csv_path}")
 
-    # Plot metrics
     plot_ablation_results(results_df)
 
 def plot_ablation_results(df):

@@ -1,0 +1,1702 @@
+ Hybrid Rule Based and Machine Learning
+  Approach for Real Time Phishing URL
+                Detection
+                                   GANDHI RAJ GIRI
+
+                Department of Computer Science and Information Technology
+                       National College of Computer Studies Nepal
+
+
+Abstract
+Phishing attacks remain one of the most prevalent and damaging vectors for cyberattacks,
+necessitating robust, real time URL classification systems. Traditional approaches
+typically rely on static blacklists and heuristic rules, which may fail to detect zero day
+phishing attempts, or computationally intensive machine learning models that often
+operate as uninterpretable "black boxes." This paper presents ShieldPhish, an explainable
+hybrid phishing URL detection framework that combines deterministic heuristic
+reasoning with machine learning prediction to improve transparency while maintaining
+low latency detection performance. The proposed architecture consists of a multilayered
+pipeline extracting a 112-dimensional feature space combining handcrafted lexical,
+security, statistical, and character level TF IDF representations. A dual path scoring
+engine evaluates URLs concurrently using a lightweight heuristic rule engine and
+supervised ML classifiers (XGBoost, Random Forest, LinearSVC, and Logistic
+Regression). Model outputs are integrated via a bounded additive fusion function, while
+SHapley Additive exPlanations (SHAP) provide local feature attributions for decision
+transparency. Evaluated on a stratified benchmark of 49,999 URLs sampled from a
+corpus of 957,334 links, Random Forest achieved peak accuracy (95.01%) and specificity
+(98.29%), while XGBoost attained the highest ROC AUC (0.9832) and recall (90.62%).
+Considering its superior overall performance across accuracy, precision, specificity, and
+F1-score, together with its favorable computational efficiency, Random Forest was
+selected as the primary deployment classifier. Sensitivity analysis confirms that Wrule =
+0.15 achieves a favorable balance between miss-rate reduction (over 75% FNR decrease)
+and false-positive control. An end-to-end prototype demonstrates the practical feasibility
+of ShieldPhish for high-throughput, explainable inline web filtering.
+   Keywords: Phishing Detection, Explainable AI (XAI), SHAP, Hybrid Classifiers,
+           Machine Learning, Heuristic Rules, FastAPI, Cybersecurity.
+
+
+                                            1
+I. Introduction
+Social engineering attacks, specifically phishing, constitute one of the most significant
+cybersecurity threats to global cyber infrastructures. Phishing attacks occur when
+malicious actors create deceptive websites or send deceptive communications designed to
+mimic trusted institutions. The primary goal is to deceive users into disclosing sensitive
+credentials, financial information, or personal identifiers. According to recent industry
+reports, such as the Verizon Data Breach Investigations Report (DBIR) [1] and the Anti
+Phishing Working Group (APWG) Phishing Activity Trends Report [2], phishing
+campaigns continue to grow in volume and sophistication, accounting for a substantial
+majority of initial access breaches in corporate networks.
+
+Historically, organizations have defended users by employing blacklist based
+mechanisms, such as Google Safe Browsing or Spamhaus. These mechanisms perform
+static lookups to cross reference incoming URL queries against lists of known malicious
+hostnames [3]. While blacklists operate with near zero latency and high precision, they
+suffer from a fundamental weakness: they are entirely reactive. They cannot identify
+"zero day" phishing domains newly registered or dynamically generated URLs that have
+not yet been flagged by threat intelligence providers.
+
+To counter this reactive limitation, researchers and security practitioners have turned to
+Machine Learning (ML) classifiers. By training models (e.g., Random Forests, Support
+Vector Machines, or Gradient Boosted Trees) on URL features, ML systems can
+generalize from historical data and detect zero day phishing attempts. However,
+standalone ML systems introduce a two fold challenge:
+
+    1. Explainability and Trust: Although tree based ensemble models such as
+       XGBoost often achieve high predictive performance, their decision making
+       process is difficult to interpret without dedicated explainability techniques. When
+       a security analyst or an end user is blocked from accessing a URL, the system
+       provides no explanation. This lack of transparency leads to user frustration and
+       makes it difficult for security administrators to verify if a block is a false positive.
+    2. Inference Latency vs. Feature Complexity: Deep learning architectures,
+       including LSTM and Transformer based models, generally incur higher
+       computational costs during inference than classical machine learning models,
+       making them less suitable for latency sensitive deployments. Furthermore,
+       computing local explainability using game theoretic methods like SHapley
+       Additive exPlanations (SHAP) can introduce significant latency. While standard
+
+                                              2
+       methods like KernelSHAP are computationally expensive, specialized variants
+       like TreeSHAP [4] optimize the execution of tree based ensembles down to
+       polynomial time, safeguarding the feasibility of low latency, explainable
+       deployment in inline security filters.
+This paper proposes ShieldPhish, an end to end hybrid phishing URL detection
+framework that addresses these limitations. ShieldPhish combines a lightweight,
+deterministic heuristic rule engine with a supervised ML classifier and integrates local
+Explainable AI (XAI) using SHAP. The primary contributions of this work are:
+
+    • We propose a multi layered hybrid phishing URL detection framework that fuses
+      deterministic heuristic rules with supervised machine learning classifiers through
+      a bounded additive fusion strategy.
+    • We construct a 112 dimensional feature representation that combines handcrafted
+      lexical, security, statistical, and character level TF IDF features to capture
+      complementary phishing URL characteristics.
+    • We integrate a local explainability layer using SHAP to decompose black box ML
+      outputs into human interpretable feature attribution charts, providing real time
+      reasoning for every blocked domain.
+    • We perform an extensive sensitivity analysis of the rule fusion weight Wrule to
+      empirically determine the optimal balance between false negative reduction and
+      false positive control.
+    • We develop an end to end prototype that demonstrates the feasibility of deploying
+      the proposed framework in real-time phishing detection environments.
+The remainder of this paper is organized as follows. Section II reviews related work.
+Section III presents the proposed ShieldPhish framework. Section IV describes the
+experimental methodology and evaluation. Section V discusses the results, and Section
+VI concludes the paper with future research directions.
+
+
+                                  II. Related Work
+
+
+The detection of phishing websites has been studied extensively, evolving from simple
+static blacklist checks to complex deep learning frameworks. We review the literature
+across three primary domains: static blacklist and heuristic engines, machine learning
+based URL detection, and explainable AI in security.
+
+A. Static Blacklist and Heuristic Based Filtering :
+
+
+
+                                           3
+Blacklisting remains the most widely deployed initial defensive mechanism. In [3], the
+author highlights that while blacklists (e.g., PhishTank, Google Safe Browsing) operate
+with high precision and near zero latency, they are fundamentally reactive, failing to
+catch newly generated phishing domains that typically remain active for less than 24
+hours. Heuristic systems, such as the rule based filters proposed by Rao and Pais [17],
+inspect specific lexical features of the URL (e.g., dot counts, hyphens, and character
+counts) to identify malicious patterns proactively. However, static rules produce high
+false positive rates because legitimate websites frequently use hyphens or complex
+subdomain routing for tracking and marketing purposes. Ultimately, these approaches are
+limited by their inability to generalize to zero day phishing variants, necessitating more
+adaptive, data driven detection mechanisms.
+
+
+
+B. Machine Learning Based URL Detection: To address the generalization limitations
+of static rule engines, researchers have employed machine learning models that analyze
+URL characteristics. Early ML studies utilized classical classifiers, such as Naive Bayes,
+Decision Trees, and Support Vector Machines, trained on lexical and host based features
+[16]. Over the last decade, deep learning architectures, such as URLNet [15], have been
+proposed to eliminate manual feature engineering by learning URL representations using
+character and word level convolutional neural networks (CNNs). However, deep learning
+models generally incur higher computational overhead during inference than classical
+machine learning models, making them less suitable for latency sensitive proxy level
+deployments.
+
+To optimize latency, recent research has evaluated tree ensemble classifiers such as
+Random Forest, XGBoost [6], and LightGBM [9] using character level TF IDF
+representations to achieve high accuracy with minimal inference latency [17].
+Furthermore, advanced Transformer-based architectures (e.g., BERT based URL
+classifiers) and Graph Neural Networks (GNNs) have been proposed to model semantic
+URL sequences and DNS relationship graphs, respectively. However, deep learning and
+GNN based approaches generally require greater computational resources, leading to
+higher latency. Although tree ensembles offer a favorable trade off between latency and
+accuracy, they function as black boxes whose internal decision boundaries remain
+opaque. While machine learning significantly improves phishing detection accuracy, its
+lack of interpretability has motivated growing interest in Explainable AI (XAI)
+techniques.
+
+C. Explainable AI (XAI) in Cybersecurity Explainability has emerged as a crucial
+requirement for applying ML in safety critical domains. In [4], Lundberg and Lee
+
+
+                                            4
+introduced SHAP (SHapley Additive exPlanations), a game-theoretic framework that
+explains predictions by computing the marginal contribution of each feature. In
+cybersecurity, XAI has been applied to explain malware classification, intrusion
+detection, and phishing URL detection. For instance, Pham et al. [14] successfully
+integrated SHAP explanations into inline web proxy filters to interpret threat
+classification decisions. While visual and vision based phishing detectors also exist to
+compare screenshots of legitimate vs. spoofed sites, they suffer from high execution
+overhead and require loading the active site, which introduces significant security risks.
+Despite this progress, there remains a research gap in successfully deploying explainable
+ML systems that operate under low latency constraints without sacrificing the safety net
+benefits of lightweight heuristic rules. Motivated by this gap, this work proposes
+ShieldPhish, which integrates lightweight heuristic reasoning with supervised machine
+learning and SHAP based explanations for real-time phishing URL detection.
+
+D. Comparison of Methodologies :Table I provides a structured comparison of the state
+of the art in phishing URL detection against our proposed framework, ShieldPhish.
+
+   Table I: COMPARISON OF PHISHING URL DETECTION METHODOLOGIES
+
+                                     Zero-Day
+Methodology               Latency                      Explainability         Hybrid Fusion
+                                     Detection
+
+Blacklists ([3])          Near Zero No                 None                   No
+
+Heuristics ([17])         Near Zero Partial            High (Rule-based)      No
+
+Deep Learning ( [15])     High       Yes               None                   No
+
+Supervised ML ( [16])     Low        Yes               None                   No
+
+XAI-based ML ( [14])      Medium     Yes               High (SHAP)            No
+
+ShieldPhish (Ours)        Low        Yes               High (Rule + SHAP)     Yes
+
+
+
+Note: Latency categories are qualitative comparisons based on published benchmarks
+and execution requirements (e.g., static checks vs. deep learning model inference vs.
+visual rendering).
+
+In summary, existing approaches typically prioritize either detection accuracy,
+computational efficiency, or interpretability. Static methods provide low latency but fail
+to detect zero day attacks, while deep learning models achieve high detection
+
+                                              5
+performance at the cost of increased computational complexity. Although explainable AI
+improves model transparency, few existing frameworks integrate deterministic heuristics,
+efficient supervised learning, and local explanations within a unified architecture suitable
+for real time deployment. ShieldPhish addresses this gap through a hybrid framework that
+combines these complementary capabilities.
+
+
+III. SYSTEM ARCHITECTURE & DATASET DYNAMICS
+This section details the complete technical methodology of the proposed hybrid phishing
+URL detection framework,covering each pipeline stage from data acquisition through
+model inference and explainability.
+
+
+A. System Architecture Overview
+The proposed framework, ShieldPhish, follows a six layer modular pipeline designed to
+systematically clean, process, score, evaluate, and interpret URL objects in high
+throughput operational contexts. The sequential dataflow moves directly from raw text
+structures to verifiable algorithmic decisions backed by post hoc explainability protocols.
+
+
+
+
+                                             6
+                Fig. 1. Modular ShieldPhish six-layer system architecture.
+
+The statistical evidence obtained from the exploratory analysis directly guided the feature
+engineering strategy adopted in the proposed ShieldPhish framework. Consequently, the
+handcrafted features described in the following subsection were selected to maximize the
+discriminative capability of the hybrid classifier.
+
+
+
+
+B. Threat Model
+
+To establish the security context for ShieldPhish, we formally define the threat model
+governing the design and evaluation of the proposed framework. This threat model
+characterizes the adversary, the assets under protection, and the boundaries of the
+defended scope.
+
+
+
+
+                                            7
+Adversary Capabilities
+
+We assume an adversary whose primary objective is to deceive end users into submitting
+credentials or sensitive information to fraudulent web pages accessed via phishing URLs.
+The adversary is modeled as follows:
+
+Capability Level: Semi-adaptive adversary operating under a black-box attack model.
+The adversary can craft phishing URLs using well known evasion techniques (e.g.,
+subdomain stacking, homoglyph substitution, registered HTTPS certificates, legitimate-
+looking domain names, and lexical obfuscation), but does not possess real-time
+knowledge of the specific model parameters or rule thresholds deployed in ShieldPhish.
+
+Resources: Low to moderate. The adversary operates primarily via automated phishing
+kit infrastructure (e.g., 16Shop, EvilProxy), which generates structurally consistent but
+lexically varied phishing URLs at scale. The adversary may continuously register newly
+generated domains and exploit the delay between domain registration and blacklist
+propagation to evade reputation-based defenses.
+
+Knowledge: Black-box with respect to the ML classifier internals. The adversary may
+have general awareness of common phishing detection signals (e.g., URL length,
+presence of IP addresses, and suspicious keywords) but cannot directly query or probe
+ShieldPhish's decision boundary.
+
+Protected Assets:
+
+ShieldPhish is designed to defend the following assets:
+
+End-user credentials: Login credentials, payment information, and session tokens that
+may be harvested via phishing landing pages.
+
+Enterprise network integrity: Web proxy and DNS layer access to downstream
+phishing infrastructure within organizational perimeters.
+
+User trust: The reputational and operational cost to organizations resulting from
+phishing incidents reaching employees or customers.
+
+Defender Assumptions:
+
+The defender (ShieldPhish) operates under the following conditions:
+
+                                            8
+    • The core detection pipeline (Layers 1–5) operates exclusively on the raw URL
+      string before any page loading or DNS resolution and does not require external
+      network access for feature extraction, heuristic scoring, machine learning
+      inference, or the primary classification decision. The deployment prototype
+      additionally provides an optional asynchronous DNS-based threat-intelligence
+      enrichment layer (Layer 6) for supplementary telemetry. This auxiliary lookup is
+      decoupled from the inline classification path and does not influence feature
+      computation or the final risk score.
+
+    • The system is deployed inline at the proxy or DNS layer and must produce a
+      classification decision within a bounded latency budget (approximately sub-
+      millisecond for ML inference and ≤100 ms including SHAP attribution).
+
+    • The underlying training data may contain temporal drift relative to the
+      deployment environment, as acknowledged in Section V.C.
+
+Trust Boundary
+
+ShieldPhish assumes that the feature extraction pipeline, heuristic rule engine, and trained
+machine learning models execute within a trusted environment. The attacker is assumed
+to have no ability to modify model parameters, feature extraction logic, or rule definitions
+during deployment.
+
+Threat Scope: ShieldPhish is designed to detect the following attack categories:
+
+    • Credential harvesting phishing URLs using brand impersonation (e.g., banking,
+      cloud, and payment portals).
+
+    • Newly registered phishing domains evading static blacklists due to delayed
+      reputation propagation or post blocklist registration.
+
+    • Lexically obfuscated URLs employing subdomain abuse, excessive path depth,
+      and embedded IP addresses.
+
+    • Mixed-scheme attacks combining legitimate HTTPS certificates with deceptive
+      domain structures.
+
+Out of Scope Attacks: The following attack vectors lie outside the current threat model
+and are identified as directions for future work:
+
+                                             9
+    • Adversarial ML attacks: Gradient-based perturbations of URL feature vectors
+      specifically crafted to force misclassification (i.e., evasion attacks against the
+      model itself). Robustness to white-box adversarial inputs is not evaluated in this
+      work.
+
+    • Spear phishing via email: Contextual social engineering based on user identity,
+      organization, or prior behavior is out of scope; ShieldPhish operates on URL
+      strings alone.
+
+    • Drive by download and exploit-kit URLs: Malware distribution URLs that do
+      not exhibit phishing landing-page characteristics are not the target detection class.
+
+    • Zero day domain generation algorithm (DGA) traffic: Algorithmically
+      generated domains used for C2 communication represent a distinct threat class
+      requiring dedicated detection approaches.
+
+Overall, the proposed threat model focuses on realistic Internet phishing campaigns in
+which URLs are inspected before page retrieval. The core ShieldPhish classifier operates
+on URL-derived information without requiring destination content or external network
+access, while the deployment prototype optionally provides asynchronous DNS-based
+threat-intelligence enrichment for supplementary telemetry. Although ShieldPhish is not
+intended to defend against every class of cyberattack, the defined assumptions and scope
+reflect common enterprise web-filtering and secure web gateway deployment scenarios.
+
+
+C. Dataset
+The benchmark dataset used in this study was constructed by combining two prominent
+public corpora representing diverse URL structures: the Kaggle Phishing Site URLs
+dataset (collected up to 2020) and the urldata dataset (collected up to 2021).
+   Corpus Scale and Class Imbalance: Prior to merging and preprocessing, the Kaggle
+    dataset contained 651,191 URLs (approx. 70.8% benign, 29.2% malicious), and the
+    urldata dataset contained 306,143 URLs (approx. 65.4% benign, 34.6% malicious).
+    The combined raw corpus yielded 957,334 URLs with an overall imbalance profile of
+    34.6% phishing and 65.4% legitimate. While the raw data spans collection years up to
+    2021, the integration of our deterministic heuristic rule engine is intended to improve
+    resilience against emerging post-2023 AI-generated phishing URL variants. Because
+    AI-synthesized malicious links frequently retain structural hallmarks (e.g., character
+    padding, IP addressing, and keyword stuffing) to spoof targets, the heuristic rules
+
+
+                                            10
+    function as invariant indicators, potentially improving the model's robustness against
+    temporal concept drift.
+
+   Label Mapping: Raw binary label mappings were standardized as:
+    • 'good' / 'benign' / 0 → 0 (Legitimate)
+    • 'bad' / 'malicious' / 1 → 1 (Phishing)
+
+   Sampling Strategy: To optimize computational training overhead during
+    crossvalidation while maintaining representative class balance, we performed
+    stratified subsampling on the cleaned corpus. We extracted a stratified evaluation
+    subset of 50,000 URLs consisting of 11,422 Phishing (22.8%) and 38,578 Legitimate
+    (77.2%) records, reflecting a realistic enterprise traffic profile where legitimate
+    requests predominate.
+
+
+C.1 Exploratory Data Analysis
+
+Dataset Overview and Descriptive Statistics
+
+Before constructing the hybrid detection framework, descriptive statistical analysis was
+performed to evaluate whether the engineered lexical, structural, security, and statistical
+features exhibit meaningful differences between legitimate and phishing URLs. This
+analysis was conducted using the cleaned, stratified evaluation dataset (N = 49,999),
+which contains 38,577 legitimate records (77.2%) and 11,422 phishing records (22.8%).
+The observed class imbalance (77.2% vs. 22.8%) was accounted for during model
+training via stratified sampling and appropriate performance metrics (F1-score, AUC-
+ROC) to avoid accuracy paradoxes.
+
+
+
+
+Feature Correlation Analysis
+To quantify the linear relationship between each engineered feature and the target
+variable (where Y = 1 represents a phishing URL and Y = 0 represents a legitimate
+URL), we computed the Pearson correlation coefficient (r) for each feature. Following
+the interpretation guidelines proposed by Cohen [21, we interpret |r| ≥ 0.1 as small/weak
+correlation, |r| ≥ 0.3 as medium/moderate correlation, and |r| ≥ 0.5 as large/strong
+correlation. The resulting correlation values are interpreted as follows:
+
+
+                                            11
+Moderate Correlations: Protocol security marker (has_https, r = -0.3833) exhibits a
+moderate negative correlation, establishing that secure HTTP connections are associated
+with legitimate URLs. Brand-associated keyword frequency (suspicious_words, r =
+0.3652) shows a moderate positive correlation. Although below Cohen's |r| ≥ 0.5
+threshold for large/strong effects, these two features display the highest association with
+the target label in our feature space.
+Weak Correlations: Character digits (num_digits, r = 0.2251), total path length
+(url_length, r = 0.1751), subdomain count (num_dots, r = 0.1719), directory depth
+(num_slashes, r = 0.1623), and IP-based hostnames (has_ip, r = 0.1619) show small but
+statistically significant positive correlations.
+Negligible Correlations: Shannon entropy (entropy, r = 0.0610) and special character
+ratios (special_ratio, r = -0.0182) exhibit negligible linear associations with the target
+variable, suggesting non-linear structures or weaker isolated discriminative power.
+Additionally, we computed pairwise inter-feature correlations to detect multicollinearity.
+No pair exceeded r = 0.85, confirming that all retained features contribute non-redundant
+information to the model.
+
+
+Statistical Significance Analysis (Welch's t-test)
+To formally evaluate whether the differences in mean feature values between legitimate
+and phishing URLs are statistically significant (rather than random artifacts of sampling),
+we conducted Welch's two-sample t-tests. Welch's t-test is defined as:
+                            t = (X̄ ₁ - X̄ ₂) / √(s₁² / N₁ + s₂² / N₂)
+where X̄ ᵢ, sᵢ², and Nᵢ denote the mean, variance, and sample size of group i (group 1:
+Legitimate; group 2: Phishing).
+The test results are detailed in Table II. Across almost all features, the null hypothesis
+(that legitimate and phishing URLs share the same mean) is rejected with extreme
+confidence (p < 0.001). The statistical summary in Table I demonstrates clear separation
+between legitimate and phishing URLs across the majority of engineered features.
+
+
+
+
+                                               12
+ Table II: STATISTICAL SUMMARY AND WELCH'S T-TEST RESULTS OF SELECTED
+                                      FEATURES
+
+                        Legit       Legit        Phish                t-
+ Feature                                                  Phish Std               p-value
+                        Mean        Std          Mean                 statistic
+
+ url_length             51.65       25.69        68.16    66.53       -25.99      4.01× 10-145
+
+ num_dots               2.19        0.92         2.75     2.28        -25.81      3.42× 10-143
+
+ num_slashes            3.25        1.66         3.97     2.30        -30.96      4.02× 10-204
+
+ num_digits             3.19        4.71         8.73     19.17       -30.62      3.01× 10-198
+
+ num_hyphens            1.38        2.72         0.62     1.36        +40.74      < 0.001
+
+ num_special            0.92        2.15         1.75     5.12        -16.86      4.46 × 10-63
+
+ has_https (binary)     0.47        0.50         0.03     0.17        +147.54     < 0.001
+
+ has_ip (binary)        < 0.001     0.02         0.04     0.18        -20.24      1.68 × 10-89
+
+ suspicious_words       0.01        0.10         0.30     0.61        -49.87      < 0.001
+
+ entropy                4.22        0.34         4.27     0.48        -11.48      2.15 × 10-30
+
+                                    0.026
+ special_ratio          0.0148                   0.0137   0.0270      +4.06       5.03 × 10-5
+                                    8
+
+
+
+Key Findings and Implications:
+i. Lexical Complexity and Redirection Structural Signatures:
+
+                                            13
+ Phishing URLs exhibit significantly higher mean lengths (68.16 characters) compared to
+legitimate URLs (51.65 characters), verified by a strong statistical difference (t = -25.99,
+p < 0.001). This confirms that phishing campaigns employ long, padded subdomain
+structures or redirect chains to masquerade as legitimate hostnames. This observation
+justifies the inclusion of lexical length, directory depth, and subdomain count as
+discriminative handcrafted features within the proposed hybrid detection framework.
+Interestingly, hyphen count is higher in legitimate URLs, potentially reflecting
+hyphenated domain names (e.g., 'my-site.com'), suggesting this feature may serve as a
+weak negative indicator.
+ii.Security Indicators and Protocol Imbalances:
+The presence of has_https exhibits the strongest discriminatory association among the
+engineered security features. Approximately 46.8% of legitimate URLs in the corpus
+explicitly leverage HTTPS protocols, while only 2.9% of phishing URLs utilize HTTPS
+(t = +147.54, p < 0.001), indicating a strong negative correlation with the phishing target
+label. Additionally, hostnames containing raw IP addresses (has_ip) are almost non-
+existent in legitimate URLs (0.026%) but represent 3.5% of phishing URLs (t = -20.24, p
+< 0.001). Given the binary nature of this feature, the large t-statistic is driven primarily by
+the near-zero variance in the legitimate class, reinforcing IP-based hostnames as a strong
+heuristic flag. Consequently, protocol usage and IP-based hostname detection were
+incorporated into the heuristic rule engine as high-confidence indicators.
+
+
+iii. Keyword Stuffing and Entropy:
+ Phishing URLs display a much higher density of suspicious brand-associated keywords
+(e.g., login, bank, verify, update, secure) with a mean density of 0.30 occurrences per
+URL compared to 0.01 in legitimate sites (t = -49.87, p < 0.001). Although the absolute
+entropy difference is modest (Δ = 0.05), the Welch's t-test confirms statistical
+significance (p < 0.001). This suggests that entropy's discriminative power may be non-
+linear or context-dependent, motivating its inclusion as a complementary feature rather
+than a primary indicator. These statistically significant differences motivated the
+inclusion of entropy and suspicious keyword frequency in both the heuristic scoring
+engine and the machine learning feature vector. The marginal positive t-statistic for
+special_ratio (legitimate mean 0.0148 vs. phishing 0.0137) suggests that special
+characters alone are not a reliable phishing discriminator, potentially because legitimate
+sites also use them in API endpoints or query strings.
+
+
+
+
+                                              14
+The mapping of statistical findings to their corresponding system components is
+summarized in Table III.
+   TABLE: III. FEATURE MAPPING FROM STATISTICAL ANALYSIS TO SYSTEM
+                                COMPONENTS
+
+                   Pearso      Welch p-
+     Feature                                 Rule Engine      ML Classifier
+                    nr          value
+
+    has_https      -0.3833      < 0.001          Yes               Yes
+
+  suspicious_wor   +0.365
+                                < 0.001          Yes               Yes
+         ds          2
+
+                   +0.175
+    url_length                  < 0.001          Yes               Yes
+                     1
+
+                   +0.171
+    num_dots                    < 0.001          Yes               Yes
+                     9
+
+                   +0.162
+   num_slashes                  < 0.001          Yes               Yes
+                     3
+
+                   +0.161
+      has_ip                    < 0.001          Yes               Yes
+                     9
+
+                   +0.061
+     entropy                    < 0.001          No                Yes
+                     0
+
+
+
+                                      15
+    special_ratio     -0.0182     5.03 × 10^-5          No                   Yes
+
+The statistical evidence obtained from the exploratory analysis directly guided the feature
+engineering strategy adopted in the proposed ShieldPhish framework. Consequently, the
+handcrafted features described in the following subsection were selected to maximize the
+discriminative capability of the hybrid classifier.
+
+
+
+
+D. Data Preprocessing & Deduplication
+Implemented in preprocessing.py via clean_data(), the following preprocessing steps
+were applied to the raw merged datasets to enforce mathematical and lexical consistency:
+    i. Deduplication: A strict check was performed on the raw URL string column,
+         identifying and removing 83,412 duplicate URL strings across the combined
+         datasets. This step is critical to prevent data leakage and ensure that
+         crossvalidation folds are statistically independent.
+    ii. Null Removal: Executed dropna(subset=['url']) to remove empty or malformed
+         rows. Imputation was not used because URL structural features are deterministic
+         and cannot be imputed without synthesizing mathematically invalid domain
+         structures.
+    iii. Type Enforcement: Enforced strict string data types on the URL text column to
+         prevent downstream tokenization failures.
+    iv. Target Encoding: Standardized all binary target labels as integer arrays.
+    v. Index Realignment: Reset the index to guarantee contiguity.
+
+
+E. Feature Engineering
+Implemented in feature_engineering.py via the FeatureExtractor class. Features are
+organized into five distinct categories producing a 112-dimensional feature vector per
+URL:
+
+E.1 . Lexical Features (6 features)
+   url_length: len(url) — Captures padding common in malicious redirects.
+   num_dots: url.count('.') — Subdomain count (indicating potential lookalike
+    hijacking).
+
+                                            16
+   num_slashes: url.count('/') — Nesting level indicator.
+   num_digits: Sum of digits — Helps capture Domain Generation Algorithms (DGA).
+   num_hyphens: url.count('-') — Lookalike domains often utilize hyphens (e.g.,
+    paypal-secure).
+   num_special: Count of characters in [@?&=_%;] Captures argument string
+    obfuscation.
+
+E.2. Security Features (2 features)
+   has_https: 1 if starting with https:// else 0 — Captures unencrypted transport.
+   has_ip: 1 if an IPv4 pattern is found in the hostname else 0 Direct IP URLs bypass
+    DNS trust checks.
+
+E.3 . Keyword Features (1 feature)
+    suspicious_words: Sum of counts of the following keywords in the URL: ['login',
+    'verify', 'secure', 'bank', 'account', 'update', 'sign', 'confirm', 'wallet', 'password',
+    'credential'].
+
+E.4 Statistical and Information-Theoretic Features
+To detect lexical irregularity, character obfuscation, and structurally anomalous URL
+patterns, ShieldPhish extracts three statistical and structural ratio features.
+Character-Level Shannon Entropy: Character level entropy measures the information
+content and irregularity of the character distribution within a URL. Given a URL string U
+of length |U| and alphabet ΣU, where ΣU denotes the set of unique characters appearing
+in U, the Shannon entropy is defined as:
+H(U) = - Σ [P(c) * log₂ P(c)] (for all c in Σ_U) (i)
+where:
+P(c) = count(c, U) / |U|
+is the empirical probability of character c in ΣU. Higher character-level entropy can
+provide a signal of increased lexical irregularity, including patterns associated with
+randomly generated domain strings, encoded tokens, or URL obfuscation.
+Digit and Special-Character Ratios: The structural density of numeric characters and
+selected high-risk punctuation symbols (@, ?, =, &, _, %, ;) is quantified by normalizing
+their counts against the total URL length. The corresponding ratios are defined as:
+R_digit(U) = [ Σ I(u_i in D) ] / [ |U| + ε ]
+R_special(U) = [ Σ I(u_i in S) ] / [ |U| + ε ] (ii)
+
+                                                17
+where D = \{'0', \ldots, '9'\}$ denotes the set of decimal digits, S = \{'@', '?', '=', '&', '_', '\
+%'}, ';\} denotes the selected special-character set, I[.] is the indicator function, and $
+\varepsilon = 10^-5 is a small positive constant used to prevent division by zero.
+
+
+
+E.5 . NLP Features via Character Level TF IDF (100 features)
+We construct character-level Term Frequency Inverse Document Frequency representations:
+
+                  TF-IDF(t, d) = TF(t, d) × log(N / df(t))……………….(ii)
+Configuration:
+•max_features=100 (empirically determined during grid selection on our development
+validation subset; scaling to 500 or 1000 features increased extraction and model
+inference latency by over 5.4x while yielding marginal cross-validation accuracy gains of
+less than 0.18%).
+• analyzer='char' (character level tokenization)
+• ngram_range=(3, 5) (captures substrings such as log, erif, ebank, and g00g to model
+common lexical patterns)
+
+
+
+
+E.6 . Empirical Hyperparameter Configuration
+Empirical Configuration Strategy
+Hyperparameters for the machine learning models and the feature extraction pipeline
+were selected through empirical experimentation on a held out development validation
+subset rather than automated search procedures such as Grid SearchCV or Randomized
+SearchCV. Candidate configurations were evaluated through manual empirical sweeps
+over predefined parameter ranges rather than exhaustive grid search, enabling efficient
+calibration while maintaining reproducibility. All empirical experiments were conducted
+using a fixed random state (random_state=42) to ensure reproducibility. Candidate
+configurations were selected based on validation Accuracy, F1-score, Recall, and
+inference latency. When multiple candidate configurations produced statistically
+comparable validation performance, the computationally less expensive configuration
+was selected to reduce model complexity and inference latency. Candidate configurations
+were evaluated using a development validation set (N = 10,000) obtained through
+stratified random sampling from the raw corpus. A separate calibration set (N = 20,000)
+was used exclusively for heuristic rule-weight sensitivity analysis. Both datasets were
+
+
+                                                18
+completely disjoint from the final evaluation dataset used in the reported 5-fold cross
+validation experiments, thereby preventing optimization bias and data leakage.
+
+
+To ensure statistical stability, candidate configuration evaluation sweeps were performed
+using a fixed validation split on this N = 10,000 subset. The candidate search spaces
+evaluated during these empirical sweeps included:
+   •   Random Forest and XGBoost n_estimators ∈ {100, 200, 300, 500}
+   •   TF-IDF max_features ∈ {100, 500, 1000}
+   •   LinearSVC C ∈{0.01, 0.1, 1.0, 10.0}
+   •   Custom Logistic Regression learning_rate ∈ {0.01, 0.05, 0.1, 0.2} with
+       num_iterations ∈{100, 200, 500, 1000}
+The final hyperparameter configurations were fixed before conducting the reported
+experimental evaluation to prevent data leakage and optimization bias. Unless otherwise
+specified, all remaining hyperparameters were retained at their library default values to
+reduce unnecessary tuning complexity and improve reproducibility. The selected values,
+including explicit configurations for custom and library estimators, are summarized in
+Table IV. These configurations were fixed for all subsequent experimental evaluation
+procedures.
+ TABLE :IV. HYPERPARAMETER CONFIGURATIONS AND EMPIRICAL SELECTION
+                                     RATIONALES
+
+                   Hyperparame
+ Model                                Value            Selection Rationale
+                   ter
+
+                                                       Validation accuracy improved by < 0.1%
+ Random
+                   n_estimators       200              from 200 to 500 trees while training time
+ Forest
+                                                       increased by 2.4×
+
+                                                       Assigns class weights inversely
+ Random
+                   class_weight       balanced         proportional to class frequencies to
+ Forest
+                                                       compensate for the 3.4:1 imbalance
+
+                                                       Gini impurity was used to evaluate
+ Random
+                   criterion          gini             candidate split quality during tree
+ Forest
+                                                       construction
+
+
+
+                                             19
+            Hyperparame
+Model                       Value            Selection Rationale
+            ter
+
+                                             Trees were allowed to expand fully,
+Random
+            max_depth       None             enabling the ensemble to capture
+Forest
+                                             complex boundaries
+
+Random                                       Default feature subsampling improving
+            max_features    sqrt
+Forest                                       ensemble diversity
+
+Random                                       Ensures reproducibility of experimental
+            random_state    42
+Forest                                       results
+
+                                             Stable validation performance while
+XGBoost     n_estimators    300
+                                             avoiding unnecessary computational cost
+
+            scale_pos_wei                    Computed as N_negative / N_positive =
+XGBoost                     3.377
+            ght                              38,577 / 11,423 ≈ 3.377
+
+                                             Controls the contribution of each
+XGBoost     learning_rate   0.3              boosting iteration, balancing
+                                             convergence and overfitting
+
+                                             Default maximum depth of trees limiting
+XGBoost     max_depth       6
+                                             model complexity
+
+                            binary:logisti   Optimizes binary classification cross-
+XGBoost     objective
+                            c                entropy loss
+
+                                             Monitors validation log-loss for tree
+XGBoost     eval_metric     logloss
+                                             selection and calibration
+
+                                             Ensures reproducibility of experimental
+XGBoost     random_state    42
+                                             results
+
+                                             Adjusts classification margin for
+LinearSVC   class_weight    balanced
+                                             minority recall
+
+
+                                   20
+             Hyperparame
+Model                         Value         Selection Rationale
+             ter
+
+LinearSVC    max_iter         2000          Ensures optimization solver convergence
+
+                                            Solves primal optimization problem
+LinearSVC    dual             False
+                                            since N_samples ≫ N_features
+
+
+                                            Default L2 regularization strength
+LinearSVC    C                1.0
+                                            parameter
+
+
+                              squared_hin   Default hinge loss penalty minimizing
+LinearSVC    loss
+                              ge            squared errors
+
+                                            Ensures reproducibility of experimental
+LinearSVC    random_state     42
+                                            results
+
+Logistic
+                                            Optimized step size (η) for gradient
+Regression   learning_rate    0.1
+                                            descent updates
+(Scratch)
+
+Logistic
+                                            Reaches steady-state minimum loss
+Regression   num_iterations   200
+                                            without overfitting
+(Scratch)
+
+                                            Optimal balance between n-gram
+TF-IDF       max_features     100
+                                            representation and latency
+
+
+
+
+                                    21
+Empirical Justification of Key Parameters
+    i. TF-IDF Dimensionality: During initial experiments on the development subset,
+       increasing character level TF IDF dimensions from 100 to 500 or 1000 increased
+       feature extraction and classifier inference time by approximately 5.4× while
+       yielding a marginal validation accuracy improvement of less than 0.18%. To
+       ensure low latency execution suitable for real-time web proxy environments, the
+       feature size was limited to 100.
+    ii. Tree Count and Convergence: For Random Forest and XGBoost, increasing the
+        number of trees beyond 200 and 300, respectively, provided stable convergence.
+        Specifically, increasing the number of trees from 200 to 500 in Random Forest
+        improved validation accuracy by less than 0.1% while increasing training time by
+        approximately 2.4×; therefore, 200 trees were selected.
+    iii.Custom Logistic Regression & Scaling: We implement binary logistic
+        regression from first principles (scratch) utilizing batch gradient descent
+        optimization. Consequently, we configure the custom learning rate (η = 0.1) and
+        iteration limit (200) directly. We standardized inputs using z-score normalization.
+        Probability calibration was performed using three fold cross validated Platt
+        scaling (CalibratedClassifierCV, method='sigmoid') to convert LinearSVC
+        decision scores into calibrated posterior probabilities compatible with the hybrid
+        fusion framework.
+Heuristic Rule-Weighting and Score Fusion: To ensure that deterministic security
+signals directly inform the final classification verdict, ShieldPhish integrates a
+lightweight heuristic rule engine with machine-learning probability estimates. Rather than
+treating the fused output as a formal Bayesian posterior, bounded additive fusion
+combines classifier probability estimates and heuristic violation penalties into a unified
+operational risk score S_final in [0, 1]. This formulation allows the rule engine to apply
+an asymmetric risk boost when severe structural anomalies are detected, while preserving
+the pure machine-learning score (S_final = P_ML) when no heuristic violations are
+triggered (S_R = 0).
+
+
+
+
+F. Heuristic Rule Engine
+The heuristic rules were derived from commonly observed phishing URL characteristics
+reported in prior threat intelligence and academic studies [3, 10, 17], including missing
+HTTPS transport security, direct IPv4 addressing, excessive subdomains (nesting),
+credential-harvesting keywords, and URL obfuscation. These rules serve as deterministic
+
+                                           22
+  safeguards, flagging highly suspicious patterns immediately and providing a safety net
+  for instances where the statistical machine learning classifiers output low-confidence
+  predictions.
+
+  Implemented in rule_engine.py as RuleEngine.evaluate(url). Rather than arbitrarily
+  assigning scores, heuristic penalties (ranging from +1 to +3) were calibrated
+  experimentally on the development validation subset and aligned with severity
+  frequencies reported in literature [3, 10, 17]: direct IP addressing (R5) and the presence
+  of the @ symbol (R2) represent highly explicit phishing obfuscations and thus receive the
+  highest penalty (+3); keyword matching (R3) and unencrypted transport (R1) receive
+  moderate penalties (+2); while path padding (R4) and subdomains (R6) receive the
+  lowest penalty (+1). Threshold settings for individual rules were calibrated based on
+  dataset statistics and structural guidelines in literature: the length threshold of 75
+  characters (R4) is verified empirically on our combined raw corpus (where over 90% of
+  benign URLs concentrate below 75 characters) and aligns with literature demonstrating
+  that malicious links pad paths to obfuscate target hostnames [17]; the dot threshold of >3
+  (R6) is verified on our dataset and is supported by DNS structural analyses where
+  excessive subdomain nesting indicates potential lookalike spoofing [10].
+
+
+
+
+Rule ID                 Condition                        Penalty        Rationale
+
+
+R1                      URL does not start with          +2             Unencrypted transport
+                        HTTPS                                           protocol
+
+
+R2                      URL contains @ symbol            +3             String before @ is ignored
+                                                                        by browsers, enabling
+                                                                        spoofing
+
+
+R3                      Contains keyword (login,         +2 each        Urgency keywords
+                        verify, etc.)                                   targeting user credentials
+
+
+R4                      URL length > 75                  +1             Obfuscation via padding
+                        characters
+
+
+R5                      IP address pattern in URL        +3             Direct routing to bypass
+                                                                        DNS reputation lists
+
+
+R6                      Dot count > 3                    +1             Excessive subdomains
+                                                                        layering
+
+
+
+                                                    23
+G. Classification Algorithms
+
+G.1 XGBoost Classifier
+Trains gradient-boosted decision trees using the second-order Taylor expansion of log-
+loss:
+                 Lt = ∑_{i=1}n [gi ft(xi) + ½ hi ft²(xi)] + Ω(ft)………...(iv)
+Parameters:
+n_estimators=100, eval_metric='logloss',          random_state=42,        scale_pos_weight=3.38
+(balancing legit-to-phishing ratio).
+
+G.2 Random Forest Classifier
+Ensemble of 100 CART decision trees fit on bootstrapped training samples with random
+feature subsets of size √M (M=112).
+
+
+Parameters:
+n_estimators=100, class_weight='balanced', random_state=42.
+
+
+
+
+G.3 Linear Support Vector Classifier (LinearSVC with Probability Calibration)
+Linear Support Vector Machines construct a maximum-margin separating hyperplane in
+the standardized 112-dimensional feature space. Because the feature dimension is
+moderately high (d = 112) and the benchmark dataset contains approximately N = 50,000
+samples, ShieldPhish employs an L2 regularized, squared-hinge-loss formulation solved
+in the primal space (dual=False). The corresponding primal optimization problem is
+formulated as:
+
+                             Minimize: (1/2) * ||w||² + C * Σ (ξi²)
+
+              subject to: yi * (wT * xi + b) ≥ 1 - ξi, and ξi ≥ 0, for i = 1, ..., n.
+
+
+
+
+                                                24
+where 'w' denotes the weight vector, 'b' is the intercept, y_i is the binary class label (-1 or
++1), and xi is the corresponding standardized feature vector. The hyperparameter C > 0
+governs the trade off between margin maximization and training error penalties, while ξ i
+represents the margin violation slack variable. For a fixed (w, b), the minimum feasible
+slack satisfies:
+
+                               ξi = max(0, 1 - yi * (wT * xi + b))
+
+Unlike the linear hinge-loss formulation, the squared hinge objective penalizes larger
+margin violations quadratically and yields a smooth loss surface.
+
+Sigmoid Probability Calibration: Because LinearSVC outputs a signed decision score:
+
+                                        f(x) = wT * x + b
+
+rather than a bounded probability, ShieldPhish applies probability calibration using
+CalibratedClassifierCV with sigmoid calibration. The calibrated probability is
+represented as:
+
+                       PML(Y = 1 | x) = 1 / [1 + exp(-(A * f(x) + B))]
+
+where 'A' and 'B' are calibration parameters estimated through the calibration procedure.
+The resulting probability estimate P ML is subsequently passed to the hybrid fusion layer,
+providing a probability based interface for integration with the evaluated classifiers.
+G. 4. Logistic Regression (Custom First-Principles Implementation)
+To establish a transparent linear probabilistic baseline without dependency on third-party
+optimization libraries, ShieldPhish incorporates a custom binary logistic regression
+classifier implemented from first principles and trained via batch gradient descent . Given
+an input feature vector xi in Rd, the model estimates the class probability:
+             ŷi = PML(Y = 1 | xi ) = σ(wT * xi + b) = 1 / [1 + exp(-(wT * xi + b))]
+
+
+where w in Rd denotes the feature-weight vector, b in R is the scalar bias (intercept), and
+σ(·) represents the standard logistic sigmoid function. The model is trained by
+minimizing the binary cross-entropy (log loss) objective:
+                 J(w, b) = -(1 / m) * Σ [yi * log(ŷi) + (1 - yi ) * log(1 - ŷi)]
+
+
+                                                25
+where m is the number of training samples and y i in {0, 1} is the ground truth binary
+label. The analytical gradients with respect to w and b are computed over the batch:
+                             ∂J / ∂w = (1 / m) * XT * (ŷ - y)
+                              ∂J / ∂b = (1 / m) * Σ ( ŷi - yi )
+At each training iteration, the parameters are updated simultaneously using learning rate
+α > 0:
+                          w ← w - α * [(1 / m) * XT * (ŷ - y)]
+                            b ← b - α * [(1 / m) * Σ (ŷi- yi)]
+To guarantee numerical stability and prevent undefined logarithmic evaluation when
+probabilities approach zero or one, predicted probabilities are clipped to the numerical
+interval [ε, 1 - ε], with ε = 10-15.
+
+
+
+
+                                             26
+G.5 Classifier Architectures and Hyperparameter Configuration
+
+To evaluate detection capability across distinct inductive biases, ShieldPhish benchmarks three
+supervised machine learning algorithms alongside a transparent first-principles linear baseline.
+All models are trained on the standardized 112-dimensional lexical and structural feature space (d
+= 112). The corresponding hyperparameter configurations are summarized in Table IV and
+described below.
+    • Random Forest (RF): Configured as an ensemble of B = 200 randomized decision trees
+      using the Gini impurity splitting criterion. At each decision node, a random feature subset
+      of size $\sqrt{d} = \sqrt{112} \approx 10$ is considered. To account for the 3.38:1 class
+      imbalance between benign and phishing samples, class weights are adjusted inversely
+      according to class frequencies using class_weight="balanced". A fixed random_state=42
+      is used to ensure deterministic experimental reproducibility.
+    • XGBoost (Extreme Gradient Boosting): Configured with T = 300 sequential boosting
+      iterations and a learning rate of η = 0.30 to optimize the binary classification objective.
+      Class imbalance is explicitly addressed using scale_pos_weight = 3.38, corresponding to
+      the ratio of legitimate to phishing samples, N_legit / N_phishing = 38,578 / 11,422 ≈
+      3.38. The evaluation metric is set to logloss, and random_state=42 is used for
+      deterministic experimental reproducibility.
+    • Linear Support Vector Classifier (LinearSVC): Formulated using an L2-regularized
+      squared-hinge-loss objective and solved in the primal space with dual=False and C = 1.0,
+      which is appropriate for the experimental setting where N = 50,000 >> d = 112. Because
+      the raw linear SVM decision function $f(\mathbf{x}) = \mathbf{w}^T \mathbf{x} + b$
+      produces unbounded decision margins rather than probability estimates, ShieldPhish
+      applies sigmoid probability calibration using CalibratedClassifierCV with 3-fold cross-
+      validation (cv=3, method="sigmoid").
+    • Logistic Regression (Scratch Baseline): Implemented from first principles in
+      src/logistic_scratch.py to provide a transparent and independently implemented linear
+      probabilistic baseline. The model is optimized using batch gradient descent with learning
+      rate α = 0.10 for 200 training iterations on the standardized feature representation.
+
+
+
+
+                                               27
+H.DualPath Bounded Score Fusion Architecture:
+To combine the probabilistic pattern-recognition capability of supervised machine
+learning with deterministic security signals from expert heuristic rules, ShieldPhish
+implements a dual path bounded score fusion mechanism .
+Let PML ∈[0, 1] denote the estimated phishing probability output by the machine-learning
+classifier, SR ∈{0, 1, 2, ..., K} represent the aggregate integer penalty score emitted by
+the deterministic heuristic rule engine (where K=20 denotes the theoretical maximum
+penalty across all rules), and Wrule ∈ [0, 1] denote the tunable heuristic weight parameter.
+The composite operational threat score Sfinal is defined as:
+                         S_final = min(P_ML + S_R * W_rule, 1.0)
+The final binary classification decision ŷ ∈{Legitimate,Phishing} is assigned through
+threshold comparison:
+ŷ = Phishing, if S_final ≥ τ
+ŷ = Legitimate, if S_final < τ
+where τ ∈ (0, 1) denotes the operational decision threshold, with τ = 0.5 used as the
+default operating threshold.
+Operational Interpretation of the Hybrid Score: The bounded additive fusion
+combines the machine-learning probability estimate with deterministic heuristic evidence
+to produce a unified operational risk score S final∈ [0, 1]. The additive term SR Wrule acts as
+an asymmetric heuristic risk boost: when structural red flags are detected, the rule engine
+increases the operational threat score to reduce false negatives associated with evasive
+phishing patterns. When no heuristic violations are triggered (S R = 0), the fused score
+reduces to the machine-learning estimate, such that Sfinal = PML.
+Importantly, Sfinal is an operational threatrisk score rather than a calibrated posterior
+probability. The bounded fusion mechanism does not itself perform probabilistic
+calibration or Bayesian posterior estimation; it provides a practical decision score for
+downstream phishing classification and alerting.
+
+
+
+I. Explainability via SHAP
+SHAP (SHapley Additive exPlanations) values decompose the predictions into additive
+feature attribution scores:
+
+                        g(x') = φ₀ + ∑_{i=1}^M φ_i x'_i………...(ix)
+
+
+                                              28
+ For tree based classifiers (XGBoost/RF), we use shap.Tree Explainer to extract and
+ present the top 5 positive feature contributions in the UI.
+
+
+
+
+ J. Algorithm Pseudocode
+ The sequential operations of the feature extraction and final hybrid decision processes are
+ formally described in Algorithm 1 and Algorithm 2.
+
+
+Algorithm 1: Lexical, Security, and Statistical Feature Extraction
+Input: Raw URL string U
+Output: Handcrafted feature vector f_hand ∈ R^12
+
+1. Initialize f_hand ← [0] * 12
+2. f_1 ← Length of U
+3. f_2 ← Count of '.' in U
+4. f_3 ← Count of '/' in U
+5. f_4 ← Count of digits in U
+6. f_5 ← Count of '-' in U
+7. f_6 ← Count of characters matching [@?&=_%;] in U
+8. f_7 ← 1 if U starts with 'https://' else 0
+9. f_8 ← 1 if U contains an IPv4 address pattern else 0
+10. f_9 ← Count of phishing keywords in U
+11. f_10 ← Shannon Entropy H(U) based on character frequencies
+12. f_11 ← f_4 / (f_1 + 10^-5)
+13. f_12 ← f_6 / (f_1 + 10^-5)
+14. return f_hand = [f_1, f_2, ..., f_12]
+
+
+
+
+Algorithm 2: Hybrid ShieldPhish Detection & Explanation
+Input: Raw URL string U, Trained ML Classifier M_ML, Heuristic Rule Weight W_R,
+Decision Threshold τ
+Output: Binary classification y_hat ∈ {0, 1} (0: Legitimate, 1: Phishing), SHAP Explanation
+E
+
+
+                                             29
+1. f_hand ← ExtractHandcraftedFeatures(U) (via Algorithm 1)
+2. f_tfidf ← ExtractCharTFIDF(U)
+3. Construct unified feature vector x ← [f_hand || f_tfidf] ∈ R^112
+4. P_ML ← M_ML.predict_proba(x) (ML probability estimate)
+5. S_R ← EvaluateRules(U) (sum of deterministic rule penalties)
+6. S_final ← min(P_ML + S_R * W_R, 1.0) (Hybrid Decision Fusion score combination)
+7. if S_final ≥ τ then
+8.    y_hat ← 1 (Classified as Phishing)
+9. else
+10. y_hat ← 0 (Classified as Legitimate)
+11. end if
+12. E ← SHAPExplainer(M_ML, x) (compute top feature contributions)
+13. return y_hat, E
+
+
+
+
+ K. Computational Complexity Analysis
+ To justify the feasibility of real time, proxy level deployment, the computational
+ complexity of each framework stage is analyzed below:
+
+ Handcrafted Feature Extraction: For a URL string of length n, lexical counting, regex
+ search, and Shannon entropy computation require a single pass, yielding a time
+ complexity of O(n).
+
+ Heuristic Rule Evaluation: Evaluating the six deterministic heuristic checks (direct
+ substrings and regex searches) runs in O(n) time.
+
+ TF-IDF Feature Transform: Generating the character n-gram representations for
+ predefined features takes O(n · L̄ ), where L̄ is the maximum n-gram length (3 ≤ L ≤ 5).
+ Since L is bounded and small, this is effectively O(n).
+
+ Machine Learning Prediction: For tree ensembles (e.g., Random Forest or XGBoost)
+ with T trees and maximum depth D, inference complexity is O(T · D). Since T=100 and
+ D is shallow, this operations count is constant and extremely low, O(1).
+
+
+
+                                             30
+Hybrid Decision Fusion: The score aggregation is a basic scalar arithmetic operation
+running in O(1).
+Total Classification Latency: Combining all components, the overall inference time
+complexity is O(n), which is linear with respect to the URL string length. This guarantees
+high-throughput performance at proxy line rates.
+
+
+
+
+L. Operational Design Decisions
+To maintain strict compliance with low-latency and security requirements, the following
+design decisions were implemented:
+
+Subdomain Handling: Rule R6 flags URLs containing more than three dots. To prevent
+introducing external network lookup dependencies or DNS resolution latencies,
+ShieldPhish deliberately avoids TLD normalization or external registry queries, relying
+exclusively on structural lexical indicators.
+
+URL Shorteners: ShieldPhish does not resolve shortened URLs (e.g., bit.ly or tinyurl)
+during the active inline inspection phase. Querying redirection targets introduces
+significant round-trip network latency and security risks (e.g., active connection with
+malicious redirection targets). Instead, the system relies on the heuristic keywords and the
+classifier's capacity to naturally flag suspicious lexical domains or redirect pathways.
+
+
+
+
+                                            31
+IV. EXPERIMENTAL RESULTS AND COMPARATIVE ANALYSIS
+A. Experimental Environment
+All experiments and model training runs were conducted on the following environment:
+    •   Processor: AMD Ryzen 5 7520U with Radeon Graphics (4 physical cores, 8 logical threads)
+    •   Memory: 7.0 GB RAM
+    •   Operating System: Garuda Linux (Arch Linux-based)
+    •   Python Runtime: Python 3.11.x (venv)
+    •   Core Libraries: numpy==1.26.4, pandas==2.2.1, scikit-learn==1.6.1, xgboost==2.0.3
+
+B. Classification Benchmarks (Stratified 5 Fold Cross Validation)
+
+
+As detailed in Table VII, the baseline machine-learning architectures exhibit distinct precision-recall trade-
+offs. Random Forest achieves the highest empirical precision (93.57%) and specificity (98.29%), indicating a
+conservative decision boundary that produces relatively few false-positive classifications. However, this
+conservative behavior is accompanied by a lower recall of 83.91%, meaning that a larger proportion of
+phishing URLs remain undetected.
+Conversely, XGBoost achieves a substantially higher recall of 90.62%, compared with 83.91% for Random
+Forest, corresponding to a 6.71 percentage-point improvement. This behavior is consistent with the use of
+scale_pos_weight = 3.38, which increases the relative contribution of the phishing minority class
+during model training. The resulting higher sensitivity improves phishing detection but is accompanied by a
+lower precision of 85.57% and specificity of 95.48%.
+These results demonstrate an explicit security-oriented precision-recall trade-off. Random Forest provides
+stronger precision and specificity and is therefore more conservative with respect to false alarms, whereas
+XGBoost prioritizes phishing detection sensitivity and achieves a lower false-negative rate. For a defensive
+security application in which missed phishing attacks may carry substantial security consequences, the
+higher-recall operating characteristic of XGBoost makes it a strong candidate for the foundational machine-
+learning layer prior to heuristic score fusion.
+                TABLE VII: CLASSIFICATION PERFORMANCE METRICS (49,999 URL CV)
+                                                     Recall
+Classifier          Accuracy       Precision                        Specificity     F1-Score     ROC-AUC
+                                                  (Sensitivity)
+
+SVM                                                                               83.80 ±
+                  93.14 ± 0.35% 91.03 ± 0.38% 77.63 ± 0.54%       97.73 ± 0.22%                96.80 ± 0.21%
+(LinearSVC)                                                                       0.46%
+
+                                                                                  88.03% ±
+XGBoost           94.37 ± 0.31% 85.57 ± 0.48% 90.62 ± 0.39%       95.48 ± 0.26%                98.32 ± 0.11%
+                                                                                  0.35%
+
+                                                                                  88.48 ±
+Random Forest     95.01 ± 0.28% 93.57 ± 0.31% 83.91 ± 0.42%       98.29 ± 0.18%                98.08 ± 0.15%
+                                                                                  0.33%
+
+
+
+
+                                                     32
+Figure 2: Performance comparison of Random Forest, XGBoost, and LinearSVC over five-fold stratified cross-
+validation.
+
+
+As illustrated in Fig. 2, the evaluated machine learning classifiers demonstrate distinct operational trade-offs
+across the five-fold stratified cross validation benchmark. Random Forest achieved the highest overall
+accuracy (95.01% ± 0.28%) and precision (93.57% ± 0.31%), accompanied by high specificity (98.29% ±
+0.18%). Conversely, XGBoost attained the highest detection recall (90.62% ± 0.39%) and the highest area
+under the ROC curve (ROC-AUC = 0.9832 ± 0.0011), identifying approximately 6.71 percentage points
+more phishing URLs in terms of recall than Random Forest. While LinearSVC achieved competitive
+precision (91.03% ± 0.38%), its lower recall (77.63% ± 0.54%) and F1-score (83.80% ± 0.46%) indicate the
+limitations of a linear decision boundary for the high dimensional character n-gram feature space. In
+operational cybersecurity environments, false negatives represent a significant security concern because
+missed phishing URLs may reach end users. Consequently, XGBoost was designated as the primary serving
+classifier in the ShieldPhish operational deployment pipeline because it provided the highest recall and ROC
+AUC among the evaluated classifiers, while maintaining sub millisecond inference and compatibility with
+TreeSHAP based local explanations. Random Forest was retained as a high-precision alternative for
+deployment settings in which minimizing false-positive alerts is prioritized.
+
+
+
+
+                                                      33
+C. Discussion of Classification Performance
+As summarized in Table VII and visualized in Fig. 2, the evaluated classifiers demonstrate strong
+classification performance across the 49,999 URL evaluation dataset under stratified 5 fold cross validation.
+Model Trade Offs and Detection Profiles:
+
+    1. XGBoost (Primary Deployment High Sensitivity & Threat Detection): In operational phishing
+       detection, minimizing false negatives is a critical objective. XGBoost achieved the highest recall
+       (90.62% ± 0.39%) and ROC-AUC (0.9832 ± 0.0011), indicating strong capability in distinguishing
+       phishing and legitimate URLs across the combined character level TF IDF and handcrafted feature
+       space. When fused with the heuristic rule layer using W_rule=0.15, XGBoost achieves a false
+       negative rate of 1.24%, providing a high-sensitivity detection profile for evasive phishing campaigns.
+       Furthermore, XGBoost is compatible with TreeSHAP based local explanations, with explanation
+       generation requiring approximately 1.8 ms per URL, alongside a reported inference time of 0.35 ms
+       per URL, making it well-suited for low latency inline security filtering.
+
+    2. Random Forest (Operational Safety & False-Positive Minimization): Random Forest
+       demonstrated strong precision (93.57% ± 0.31%) and specificity (98.29% ± 0.18%), while achieving
+       the highest overall accuracy (95.01% ± 0.28%). Although its standalone recall (83.91%) is lower than
+       that of XGBoost, its higher precision and specificity provide a more conservative detection profile.
+       Consequently, Random Forest is well-suited as a high precision alternative for deployment settings in
+       which minimizing false positive alerts on benign traffic is prioritized.
+
+    3. Linear Support Vector Classifier (LinearSVC): While LinearSVC exhibited competitive
+       specificity (97.73% ± 0.22%) and an ROC-AUC of 0.9680 ± 0.0021, its lower recall (77.63% ±
+       0.54%) illustrates the challenge of linearly separating complex lexical n-gram patterns without non-
+       linear feature mappings.
+
+
+
+
+Figure 3: Discriminative evaluation of the machine learning classifiers over the five-fold cross-validation dataset.
+
+
+
+
+                                                        34
+Discriminative Evaluation via ROC and Precision–Recall (PR) Curves: The comprehensive threshold-
+independent evaluation is presented in Fig. 3.
+
+    • Fig. 3(a) (ROC Analysis): Both Random Forest (AUC = 0.9808 ± 0.0015) and XGBoost (AUC =
+      0.9832 ± 0.0011) exhibit curves that rise steeply toward the upper-left boundary (0, 1), confirming
+      strong class separability across varied decision thresholds.
+
+    • Fig. 3(b) (Precision–Recall Analysis): Because phishing URL detection represents an imbalanced
+      classification problem (22.84% positive class prevalence), the Precision Recall (PR) curve provides a
+      particularly rigorous indicator of operational reliability. Against the no-skill baseline (AP = 0.230),
+      Random Forest achieves a peak PR AUC = 0.9234, while XGBoost yields a PR AUC = 0.9157,
+      confirming that both tree ensembles demonstrate consistently strong precision recall trade-offs across
+      a broad range of recall values.
+
+To provide granular visibility into classifier errors, Table V presents the aggregated out of sample confusion
+matrices accumulated over the cross validation folds.
+                   TABLE VIII: CONFUSION MATRICES ON THE 49,999-URL DATASET
+Model                 True Negatives (TN)    False Positives (FP)   False Negatives (FN)    True Positives (TP)
+
+SVM (LinearSVC)      37,703                 874                     2,555                  8,867
+
+XGBoost              36,832                 1,745                   1,071                  10,351
+
+Random Forest        37,918                 659                     1,838                  9,584
+
+
+D. Comparison with Deep Learning Baselines
+While deep learning architectures, including character level CNNs, LSTMs, and transformer based models
+such as BERT, have been investigated for phishing URL detection in recent literature [15], [18], their
+computational requirements may limit their suitability for latency-sensitive inline web filtering. Reported
+studies indicate that recurrent and attention based architectures can introduce non negligible inference
+overhead on CPU based systems, particularly when compared with lightweight tree based classifiers.
+Furthermore, generating local explanations for black-box neural networks and other non-tree models
+commonly relies on model agnostic perturbation methods such as KernelSHAP or LIME, which require
+repeated model evaluations for each instance and can therefore introduce substantial explanation overhead. In
+contrast, ShieldPhish employs gradient boosted decision trees with TreeSHAP for efficient local explanation
+of the deployed XGBoost classifier. On the experimental hardware (AMD Ryzen 5 7520U, 7.0 GiB RAM),
+the deployed XGBoost model achieved an average inference latency of approximately 0.35 ms per URL,
+while TreeSHAP generated local feature attributions in approximately 1.8 ms per URL. These measurements
+demonstrate the low latency characteristics of the proposed explainable detection pipeline and support its
+suitability for real time, inline phishing URL filtering.
+
+
+
+
+                                                      35
+E. Statistical Significance Analysis
+While evaluating average accuracy is standard practice, reporting average performance alone does not
+formally demonstrate that one model is reliably better than another due to potential variance across data
+partitions.
+To determine whether the observed differences between competing classifiers were statistically significant,
+paired statistical hypothesis testing was performed on the stratified five-fold cross-validation results. Because
+all classifiers were evaluated on identical folds, paired comparisons were conducted using the paired t-test.
+Statistical significance was assessed at a confidence level of 95% (α = 0.05). The null hypothesis assumed
+that the compared classifiers achieved equal mean accuracy across the evaluation folds. Although the
+comparison was based on five paired cross-validation folds (df = 4), the paired t-test was used because each
+classifier was evaluated on identical data partitions, thereby preserving paired observations.
+The paired t-test results on fold-wise accuracy are presented in Table IX:
+TABLE: IX. PAIRED T-TEST SIGNIFICANCE TESTING RESULTS
+
+ Comparis        t-                       Significa
+                             p-value
+ on              statistic                nt
+
+ RF        vs
+                 +1.145      0.316        No
+ XGB
+
+ RF        vs
+                 +22.366     < 0.001      Yes
+ SVM
+
+ RF vs LR        +25.504     < 0.001      Yes
+
+
+
+The statistical analysis indicates that Random Forest achieved significantly higher accuracy than LinearSVC
+and Logistic Regression (p < 0.05). Although Random Forest achieved a higher mean accuracy than
+XGBoost (95.01% vs. 94.37%), the observed difference was not statistically significant (p = 0.316).
+Consequently, Random Forest was selected as the primary classifier based on its consistently superior
+average performance across all metrics (highest Accuracy, Precision, Specificity, and F1-Score) and its
+favorable trade-off between detection effectiveness and computational efficiency.
+Per-fold cross-validation confidence intervals: Random Forest achieved 95.01% ± 0.28% accuracy,
+XGBoost 94.37% ± 0.31%, LinearSVC 93.14% ± 0.35%, and Logistic Regression (Scratch) 92.56% ± 0.07%
+over the five folds.
+
+
+Threats to Validity
+To support reproducibility and transparent evaluation, we identify and discuss threats to the validity of our
+experimental results using the four standard categories from empirical software engineering research.
+
+
+
+                                                       36
+Internal Validity: Internal validity concerns factors that may have introduced confounds into the observed
+performance differences between classifiers. A primary threat concerns hyperparameter selection, which was
+performed heuristically on a separate 10,000 URL development validation set rather than via nested cross
+validation on the final evaluation dataset. The heuristic rule weight calibration was subsequently conducted
+on an independent 20,000 URL calibration set. This experimental separation reduces optimization bias and
+data leakage; however, the development validation set may not perfectly represent the distribution observed
+during cross validation. Furthermore, the class imbalance ratio of approximately 77:23 (legitimate:phishing)
+was addressed via stratified splitting and class weight balancing; residual imbalance effects on threshold-
+sensitive metrics such as Precision and Recall remain a potential confounder.
+External Validity: External validity concerns the generalizability of our findings beyond the experimental
+dataset. The evaluation dataset spans multiple public corpora (PhishTank, DMOZ, VirusTotal) collected
+through 2021; phishing campaigns evolve rapidly, and the model's performance on previously unseen
+phishing campaigns and emerging evasion techniques particularly AI-generated phishing domains and
+internationalized domain names (IDNs) is unknown. URL only feature extraction excludes page content,
+DOM structure, and certificate transparency signals that are frequently incorporated into production phishing
+detection systems. Additionally, all experiments were conducted on a single hardware configuration (AMD
+Ryzen 5 7520U, 7.0 GiB RAM), so inference latency benchmarks may not generalize to server-grade or
+edge-deployment environments.
+Construct Validity: Construct validity concerns whether the evaluation metrics correctly capture the
+security objectives of phishing detection. We evaluated classifiers using Accuracy, Precision, Recall,
+Specificity, F1-Score, and ROC-AUC, which are standard for binary classification. However, in an
+operational network filtering context, the cost of a missed phishing URL (False Negative) substantially
+exceeds the cost of a false alarm (False Positive). Our evaluation treats both error types symmetrically. A
+more operationally meaningful construct would weight False Negatives with a domain specific cost matrix,
+or optimize for a fixed False Positive Rate budget. The reported metrics should therefore be interpreted as
+neutral classifier comparisons rather than direct operational cost estimates.
+Conclusion Validity: Conclusion validity concerns whether the statistical conclusions drawn from the
+results are reliable. The paired t-test was conducted on five fold scores (df = 4), yielding low statistical power
+and sensitivity to normality assumptions. As acknowledged in Section IV.E, the non significant result for RF
+vs. XGB (p = 0.316) should be interpreted conservatively: it reflects the inability to reject the null hypothesis
+with only five paired observations, not a confirmation of equivalent performance. Future work should
+replicate this evaluation with repeated k-fold cross validation (e.g., 10 repetitions of 5-fold) to obtain a more
+stable estimate of the sampling distribution and increase test power.
+Overall, although these limitations may affect absolute performance estimates, they do not invalidate the
+comparative evaluation presented in this work because identical preprocessing, feature extraction,
+hyperparameter selection procedures, and evaluation protocols were consistently applied to all competing
+classifiers.
+
+F. Rule Weight Sensitivity & Ablation Sweep
+To calibrate the heuristic rule weight parameter Wrule, we conducted an ablation sweep on an independent
+calibration subset containing 20,000 URLs. The parameter was varied from Wrule=0.0 (machine learning
+predictions only) to Wrule=1.0 (dominant heuristic contribution), while all classifier parameters remained
+fixed.
+
+
+                                                       37
+The final hybrid decision score is computed as
+                                         Sfinal=min(PML+SR×Wrule,1.0),
+where PML denotes the machine learning probability, SR is the cumulative heuristic rule score, and Wrule
+controls the contribution of deterministic heuristics.
+
+
+
+
+                 Figure : 4 Sensitivity analysis of the heuristic rule weight parameter Wrule..
+
+
+
+The findings are captured in Table X:
+             TABLE X: ABLATION SWEEP RESULTS FOR RULE-WEIGHT (W_rule)
+Model             W_rule Accuracy F1-Score False Positive Rate (FPR) False Negative Rate (FNR)
+
+                 0.00     96.10%        91.67%   3.57%                         5.04%
+
+                 0.05     95.09%        89.86%   5.28%                         3.67%
+
+                 0.10     93.38%        86.94%   7.84%                         2.46%
+XGBoost
+                 0.15     90.19%        81.98%   12.32%                        1.24%
+
+                 0.20     80.11%        69.35%   25.57%                        0.42%
+
+                 0.25     56.69%        51.06%   55.94%                        0.04%
+
+                 0.00     99.53%        98.97%   0.45%                         0.55%
+Random Forest 0.05        99.42%        98.72%   0.65%                         0.35%
+
+                 0.10     98.92%        97.66%   1.32%                         0.24%
+
+                                                      38
+Model              W_rule Accuracy F1-Score False Positive Rate (FPR) False Negative Rate (FNR)
+
+
+
+                  0.15      97.38%      94.51%     3.35%                      0.13%
+
+                  0.20      90.78%      83.05%     11.92%                     0.00%
+
+                  0.25      56.76%      51.11%     55.87%                     0.00%
+
+
+
+Analysis of the sensitivity trajectories yields the following key insights:
+    i. Miss-Rate Reduction: The heuristic rule layer helps identify phishing URLs that receive relatively
+       lower confidence scores from the statistical classifier, thereby substantially decreasing the False
+       Negative Rate (FNR). For XGBoost, FNR drops from 5.04% to 1.24% at W_rule = 0.15 (a 75.4%
+       relative reduction in missed phishing URLs). For Random Forest, FNR drops from 0.55% to 0.13% (a
+       76.3% relative reduction).
+    ii. Empirical Trade off and Knee Point (W_rule = 0.15): A lower weight keeps false alarms minimal but
+        limits the defensive benefit of the heuristics. However, as W_rule increases beyond 0.15, the false
+        alarm rate (FPR) rises steeply (25.57% at W_rule = 0.20 for XGBoost, exceeding 55% at W_rule =
+        0.25 for both models) because deterministic heuristic triggers overpower the machine learning
+        classifier's high-confidence benign predictions.
+    iii.Selection of Operating Point: Consequently, empirical results indicate that W_rule = 0.15 provides
+        the most favorable empirical operating point, balancing phishing detection effectiveness while
+        maintaining an acceptable false positive rate. The selected value of W_rule = 0.15 was fixed on this
+        validation set prior to the final five fold cross-validation experiments and was subsequently used for
+        all reported performance evaluations.
+
+
+
+
+                                                        39
+V. Discussion
+A. Global Feature Importance and Model Explainability (SHAP Analysis)
+
+To interpret the decision making process of the gradient-boosted tree ensemble and ensure transparency in
+security operations, we applied Lundberg's TreeSHAP (SHapley Additive exPlanations) algorithm.
+TreeSHAP provides theoretically grounded, game-theoretic attributions (φ_i) that quantify the exact marginal
+contribution of each extracted feature to the final model prediction log-odds.
+
+Fig. 4 presents the SHAP beeswarm summary plot computed across representative out-of-sample URL
+instances. Each point corresponds to an individual URL sample, where horizontal displacement denotes the
+feature's directional impact on the phishing prediction (φ_i > 0 shifts the prediction toward phishing, while
+φ_i < 0 shifts toward legitimate), and the color gradient reflects the normalized feature value (blue = low, red
+= high). Features along the vertical axis are ranked in descending order of their mean absolute SHAP value (|
+φ_i|), indicating their overall contribution to the model predictions.
+
+Analysis of the global attribution landscape yields the following empirical observations:
+
+    1. Primary Lexical Identifiers: * Aggregated Character TF-IDF Features: The aggregated character TF-
+       IDF representation exhibits the highest global feature importance, indicating that character-level
+       subword patterns capture lexical variations beyond manually engineered keyword features.
+
+            • Suspicious Keyword Frequency: Suspicious keyword frequency is among the strongest lexical
+              predictors, with higher keyword counts generally producing positive SHAP values that shift
+              predictions toward the phishing class.
+
+    2. Structural Complexity and Entropy: * URL Length and Shannon Entropy: Longer URLs and higher
+       Shannon entropy are generally associated with more complex lexical structures and produce
+       increasingly positive SHAP values, indicating greater influence toward phishing predictions.
+
+            • Delimiter and Digit Proportions: Higher counts of hyphens, slashes, and digits are associated
+              with increasingly positive SHAP values, indicating that these structural characteristics
+              contribute positively to phishing predictions.
+
+
+
+                                                      40
+3. Protocol and Addressing Indicators: * Transport Protocol (has_https): URLs without HTTPS
+   generally receive positive SHAP contributions toward phishing predictions, whereas HTTPS presence
+   tends to shift predictions toward the legitimate class. While this reflects the statistical distribution of
+   the training dataset, we note that modern phishing campaigns increasingly utilize free TLS
+   certificates; thus, the framework's bounded heuristic engine acts as a critical safety net to ensure
+   HTTPS presence alone cannot force a false-negative classification for otherwise suspicious URLs.
+
+       • Direct IP Hostnames (has_ip): Although relatively infrequent in modern datasets, URLs
+         containing direct IP addresses consistently receive strong positive SHAP contributions toward
+         phishing predictions.
+
+4. Operational Utility in Security Operations: TreeSHAP improves the interpretability of the underlying
+   tree ensemble by providing feature level explanations for individual predictions. In operational
+   Security Operations Center (SOC) environments, these explanations can assist analysts in
+   understanding which lexical and structural characteristics contributed most to each classification
+   decision. Although SHAP explanations are generated for the machine learning component only, they
+   complement the deterministic heuristic rule engine by providing transparent explanations for the
+   statistical portion of the hybrid decision process, thereby improving the overall interpretability of
+   ShieldPhish.
+
+
+
+
+                                                   41
+     Figure 5: SHAP summary plot illustrating the global contribution of the most influential features to the
+                                                 XGBoost classifier.
+
+
+
+B. Adversarial Evasion & Joint Space Defense
+
+Security reviewers naturally assess the threat model from an attacker's perspective. In a "cat-and-mouse"
+scenario, an attacker might deliberately modify phishing URLs to bypass known rules such as deploying
+transport encryption (avoiding R1), omitting the @ character (avoiding R2), and keeping the URL length
+short (avoiding R4).
+
+However, because ShieldPhish operates as a hybrid framework, forcing the attacker to drop heuristic
+indicators restricts their lexical flexibility. If the attacker registers short, clean domain names with valid SSL
+certificates to evade the rule engine, they must rely on structural paths and registration characteristics that
+differ statistically from their targeted brand spoofing. This forces the link's statistical properties into character
+n-gram frequencies that the 100-dimensional TF-IDF Machine Learning layer is trained to recognize. This
+joint-space boundary enforces a defensive trade-off: evasion in the heuristic space increases exposure in the
+statistical supervised ML space.
+
+C. Temporal Concept Drift & Dataset Currency
+
+A common critique of phishing detection models is dataset temporality. While our training corpora span
+collection dates up to 2021, the structural mechanics of internet routing (subdomain counts, DNS limits, and
+RFC rules) remain governed by invariant standards. To address the risk of concept drift caused by AI
+generated phishing links, the heuristic rule engine acts as a temporal safeguard. Future work will involve
+
+                                                         42
+integrating a continuous learning loop that benchmarks ShieldPhish against real-time threat telemetry (e.g.,
+live PhishTank APIs) to monitor performance degradation and capture emerging zero-day indicators.
+
+
+
+D. Execution Safety & Data Privacy
+
+The datasets used in this research consist entirely of public URL strings, meaning no personally identifiable
+information (PII) or user tracking metadata was collected. To prevent accidental infection, URLs are treated
+statically as raw strings. No active HTTP requests or sockets were opened to request content from remote
+servers during the feature extraction stage, guaranteeing zero interaction with potentially active malware
+distribution panels.
+
+
+
+
+                                                     43
+VI. CONCLUSION & FUTURE WORK
+
+
+This paper presented ShieldPhish, an explainable hybrid framework for real time phishing URL detection. By
+combining a deterministic heuristic rule-scoring engine with gradient boosted trees (XGBoost) and bagged
+decision tree ensembles (Random Forest), ShieldPhish bridges the operational gap between reactive static
+blacklists and computationally heavy deep learning models. Rigorous five fold cross validation on a 49,999
+URL benchmark demonstrated that Random Forest achieved peak overall accuracy (95.01%) and specificity
+(98.29%), while XGBoost attained the highest detection recall (90.62%) and an outstanding ROC AUC of
+0.9832. Bounded additive rule fusion with W_rule=0.15 further reduced the XGBoost false negative rate by
+over 75%, providing a high-sensitivity detection profile against evasive phishing campaigns. Based on its
+superior detection sensitivity and ROC-AUC, together with its compatibility with TreeSHAP based
+explanations, XGBoost was selected as the primary serving classifier for the end to end deployment
+prototype, delivering local, human interpretable feature attributions in approximately 1.8 ms per URL
+alongside a reported 0.35 ms inference latency. These results support the practical feasibility of ShieldPhish
+for low-latency, transparent inline web filtering in real-world environments.
+Future work will focus on:
+1. Continuous Online Learning: Integrating live phishing feeds (e.g., from active threat intelligence APIs) to
+continuously update the statistical model and mitigate temporal drift.
+
+2. Dynamic Rule Adaptation: Developing a reinforcement learning framework to dynamically tune heuristic
+rule weights based on real-time detection feedback and false-positive metrics.
+
+3. Lightweight Transformer Deployment: Exploring the optimization and deployment ofcompact transformer
+architectures utilizing model compression (distillation and pruning) to serve as efficient statistical baselines.
+
+Collectively, these extensions aim to further improve the robustness.
+
+
+
+
+                                                       44
+8. REFERENCES
+1. Verizon, "2024 Data Breach Investigations Report (DBIR)," Verizon Business, Tech. Rep., 2024.
+[Online]. Available: https://www.verizon.com/business/resources/reports/dbir/. Accessed: Jul. 2026.
+2. Anti-Phishing Working Group (APWG), "Phishing Activity Trends Report: 4th Quarter 2023," APWG,
+Tech. Rep., 2024. [Online]. Available: https://apwg.org/trendsreports/. Accessed: Jul. 2026.
+3. S. Sheng, B. Wardman, G. Warner, L. F. Cranor, J. Hong, and C. Zhang, "An empirical analysis of
+phishing blacklists," in *Proceedings of the 6th Conference on Email and Anti-Spam (CEAS)*, 2009. doi:
+10.1184/R1/6469805
+4. S. M. Lundberg and S.-I. Lee, "A unified approach to interpreting model predictions," in *Advances in
+Neural Information Processing Systems (NeurIPS)*, 2017, pp. 4765–4774. [Online]. Available:
+https://proceedings.neurips.cc/paper/2017/hash/70feb62b69f16e023e11440a1a43d8d0-Abstract.html.
+Accessed: Jul. 2026.
+5. J. Platt, "Probabilistic Outputs for Support Vector Machines and Comparisons to Regularized Likelihood
+Methods," *Advances in Large Margin Classifiers*, 1999.
+6. T. Chen and C. Guestrin, "XGBoost: A scalable tree boosting system," in *Proceedings of the 22nd ACM
+SIGKDD International Conference on Knowledge Discovery and Data Mining*, 2016, pp. 785–794. doi:
+10.1145/2939672.2939785
+7. L. Breiman, "Random Forests," *Machine Learning*, vol. 45, no. 1, pp. 5–32, 2001. doi:
+10.1023/A:1010933404324
+8. M. A. Hearst, S. T. Dumais, E. Osuna, J. Platt, and B. Scholkopf, "Support vector machines," *IEEE
+Intelligent Systems and their Applications*, vol. 13, no. 4, pp. 18–28, 1998. doi: 10.1109/101.708428
+9. G. Ke et al., "LightGBM: A highly efficient gradient boosting decision tree," in *Advances in Neural
+Information Processing Systems (NeurIPS)*, 2017, pp. 3146–3154.
+10. A. Aleroud and L. Zhou, "Phishing environments, techniques, and countermeasures: A survey,"
+*Computers & Security*, vol. 68, pp. 160–196, 2017. doi: 10.1016/j.cose.2017.02.002
+11. A. Basit, M. Zafar, A. R. Javed, and Z. Jalil, "A novel hybrid approach for phishing website detection
+using machine learning," *IEEE Access*, vol. 9, pp. 3760–3770, 2021. doi: 10.1109/ACCESS.2020.3045638
+12. J. Mao, W. Tian, P. Li, T. Wei, and Z. Liang, "Phishing-Alarm: Robust and Efficient Phishing Detection
+via Page Component Similarity," *IEEE Access*, vol. 5, pp. 17020–17030, 2017. doi:
+10.1109/ACCESS.2017.2743542
+13. S. Yadav, A. K. K. Reddy, A. L. N. Reddy, and S. Ranjan, "Detecting algorithmically generated domain-
+flux attacks," *IEEE/ACM Transactions on Networking*, vol. 20, no. 5, pp. 1663–1677, Oct. 2012. doi:
+10.1109/TNET.2012.2191567
+14. N. Capuano, G. Fenza, V. Loia, and C. Stanzione, "Explainable Artificial Intelligence in CyberSecurity:
+A Survey," *IEEE Access*, vol. 10, pp. 93575–93600, 2022. doi: 10.1109/ACCESS.2022.3204171
+15. H. Le, Q. Pham, D. Sahoo, and S. C. H. Hoi, "URLNet: Learning a URL representation with deep
+learning for malicious URL detection," *arXiv preprint arXiv:1802.03162*, 2018. [Online]. Available:
+https://arxiv.org/abs/1802.03162. Accessed: Jul. 2026.
+16. O. K. Sahingoz, E. Buber, O. Demir, and D. Karaci, "Machine learning based phishing detection from
+URLs," *Expert Systems with Applications*, vol. 117, pp. 345–357, 2019. doi: 10.1016/j.eswa.2018.10.022
+17. R. S. Rao and A. R. Pais, "Detection of phishing websites using machine learning approach," *Computers
+& Security*, vol. 89, p. 101662, 2020. doi: 10.1016/j.cose.2019.101662
+
+
+                                                    45
+18. A. Aljofey, S. A. Bello, J. Lu, and C. Xu, "BERT-PhishFinder: A Robust Model for Accurate Phishing
+URL Detection With Optimized DistilBERT," *IEEE Transactions on Dependable and Secure Computing*,
+vol. 22, no. 4, pp. 4315–4329, July/August 2025. doi: 10.1109/TDSC.2025.3545771
+19. Š. Mandlík, T. Pevný, V. Šmídl, and L. Bajer, "Malicious Internet Entity Detection Using Local Graph
+Inference," *IEEE Transactions on Information Forensics and Security*, vol. 19, pp. 3554–3566, 2024. doi:
+10.1109/TIFS.2024.3360867
+20. S. M. Lundberg et al., "From local explanations to global understanding with explainable AI for trees,"
+*Nature Machine Intelligence*, vol. 2, no. 1, pp. 56–67, 2020. doi: 10.1038/s42256-019-0138-9
+21.J.~Cohen, \emph{Statistical Power Analysis for the Behavioral Sciences}, 2nd~ed. Hillsdale, NJ, USA:
+Lawrence Erlbaum Associates, 1988.
+
+
+
+
+                                                    46
+

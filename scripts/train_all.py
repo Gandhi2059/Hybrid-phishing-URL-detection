@@ -97,77 +97,92 @@ def build_features(rebuild: bool = False) -> pd.DataFrame:
     print(f"  ✔ TF-IDF vectorizer  → {TFIDF_PATH}")
     return df_feat
 
-
-def run_cross_validation(X: pd.DataFrame, y: pd.Series, n_splits: int = 5) -> list[dict]:
+def run_cross_validation(X: pd.DataFrame, y: pd.Series, urls: pd.Series, n_splits: int = 5) -> list[dict]:
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     os.makedirs(GRAPHS_DIR, exist_ok=True)
     results: list[dict] = []
 
-    # Random Forest
-    print(f"\n  → {n_splits}-fold CV on Random Forest …")
-    t0 = time.time()
-    rf_preds = cross_val_predict(
-        RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42,
-                               class_weight="balanced"),  # handles 3.4:1 imbalance
-        X, y, cv=cv, n_jobs=-1,
-    )
-    print(f"     done in {time.time()-t0:.1f}s")
-    results.append(evaluate_model(y, rf_preds, "Random Forest (5-fold CV)"))
-    plot_confusion_matrix(y, rf_preds, "Random Forest", GRAPHS_DIR)
+    # Drop globally-fitted TF-IDF features to prevent leakage; we compute them strictly per-fold
+    tfidf_cols = [c for c in X.columns if c.startswith("tfidf_")]
+    X_base = X.drop(columns=tfidf_cols)
+    
+    rf_preds  = np.zeros(len(y), dtype=int)
+    xgb_preds = np.zeros(len(y), dtype=int)
+    svm_preds = np.zeros(len(y), dtype=int)
+    lr_preds  = np.zeros(len(y), dtype=int)
 
-    # XGBoost — scale_pos_weight = neg/pos (XGBoost's class_weight='balanced')
-    _neg, _pos = int((y == 0).sum()), int((y == 1).sum())
-    _spw = round(_neg / _pos, 4)
-    print(f"\n  → {n_splits}-fold CV on XGBoost (scale_pos_weight={_spw}) …")
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    
+    print(f"\n  → Running {n_splits}-fold CV with STRICT fold-isolated TF-IDF and Scaling …")
     t0 = time.time()
-    xgb_preds = cross_val_predict(
-        xgb.XGBClassifier(n_estimators=300, eval_metric="logloss",
-                          n_jobs=-1, random_state=42, verbosity=0,
-                          scale_pos_weight=_spw),  # handles 3.4:1 imbalance
-        X, y, cv=cv, n_jobs=-1,
-    )
-    print(f"     done in {time.time()-t0:.1f}s")
-    results.append(evaluate_model(y, xgb_preds, "XGBoost (5-fold CV)"))
-    plot_confusion_matrix(y, xgb_preds, "XGBoost", GRAPHS_DIR)
-
-    # SVM
-    print(f"\n  → {n_splits}-fold CV on SVM (LinearSVC) …")
-    t0 = time.time()
-    svm_pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", CalibratedClassifierCV(
-            LinearSVC(dual=False, max_iter=2000, random_state=42,
-                      class_weight="balanced"),  # handles 3.4:1 imbalance
-            cv=3
-        )),
-    ])
-    svm_preds = cross_val_predict(svm_pipe, X, y, cv=cv, n_jobs=-1)
-    print(f"     done in {time.time()-t0:.1f}s")
-    results.append(evaluate_model(y, svm_preds, "SVM Linear (5-fold CV)"))
-    plot_confusion_matrix(y, svm_preds, "SVM", GRAPHS_DIR)
-
-    # Logistic Regression (from scratch)
-    try:
-        from src.logistic_scratch import LogisticRegressionScratch
-        print(f"\n  → {n_splits}-fold CV on Logistic Regression (scratch) …")
-        t0     = time.time()
-        X_np   = X.to_numpy()
-        y_np   = y.to_numpy()
-        lr_pred = np.zeros(len(y_np), dtype=int)
-        scaler  = StandardScaler()
-        X_sc    = scaler.fit_transform(X_np)
-        for tr_idx, te_idx in cv.split(X_sc, y_np):
+    
+    y_np = y.to_numpy()
+    urls_np = urls.to_numpy()
+    
+    for fold, (tr_idx, te_idx) in enumerate(cv.split(X_base, y_np), 1):
+        print(f"    Fold {fold}/{n_splits}...")
+        X_tr_base, X_te_base = X_base.iloc[tr_idx], X_base.iloc[te_idx]
+        y_tr = y_np[tr_idx]
+        
+        # 1. Strict Fold-Isolated TF-IDF
+        tfidf = TfidfVectorizer(max_features=100, analyzer="char", ngram_range=(3, 5))
+        tfidf_tr = tfidf.fit_transform(urls_np[tr_idx]).toarray()
+        tfidf_te = tfidf.transform(urls_np[te_idx]).toarray()
+        
+        # 2. Combine handcrafted + TF-IDF
+        X_tr = np.hstack([X_tr_base.to_numpy(), tfidf_tr])
+        X_te = np.hstack([X_te_base.to_numpy(), tfidf_te])
+        
+        # 3. Dynamic scale_pos_weight
+        neg = (y_tr == 0).sum()
+        pos = (y_tr == 1).sum()
+        spw = round(neg / pos, 4)
+        
+        # 4. Strict Fold-Isolated StandardScaler (for SVM and LR)
+        scaler = StandardScaler()
+        X_tr_scaled = scaler.fit_transform(X_tr)
+        X_te_scaled = scaler.transform(X_te)
+        
+        # Random Forest
+        rf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42, class_weight="balanced")
+        rf.fit(X_tr, y_tr)
+        rf_preds[te_idx] = rf.predict(X_te)
+        
+        # XGBoost
+        xgb_clf = xgb.XGBClassifier(n_estimators=300, eval_metric="logloss", n_jobs=-1, random_state=42, verbosity=0, scale_pos_weight=spw)
+        xgb_clf.fit(X_tr, y_tr)
+        xgb_preds[te_idx] = xgb_clf.predict(X_te)
+        
+        # SVM
+        svm_clf = CalibratedClassifierCV(LinearSVC(dual=False, max_iter=2000, random_state=42, class_weight="balanced"), cv=3)
+        svm_clf.fit(X_tr_scaled, y_tr)
+        svm_preds[te_idx] = svm_clf.predict(X_te_scaled)
+        
+        # Logistic Regression
+        try:
+            from src.logistic_scratch import LogisticRegressionScratch
             lr = LogisticRegressionScratch(learning_rate=0.1, num_iterations=200)
-            lr.fit(X_sc[tr_idx], y_np[tr_idx])
-            lr_pred[te_idx] = lr.predict(X_sc[te_idx])
-        print(f"     done in {time.time()-t0:.1f}s")
-        results.append(evaluate_model(y_np, lr_pred, "Logistic Reg. Scratch (5-fold CV)"))
-        plot_confusion_matrix(y_np, lr_pred, "Logistic Reg. (Scratch)", GRAPHS_DIR)
-    except Exception as exc:
-        print(f"  [Skip] LR Scratch: {exc}")
+            lr.fit(X_tr_scaled, y_tr)
+            lr_preds[te_idx] = lr.predict(X_te_scaled)
+        except Exception:
+            pass
+
+    print(f"     CV evaluation completed in {time.time()-t0:.1f}s")
+    
+    results.append(evaluate_model(y_np, rf_preds, "Random Forest (5-fold CV)"))
+    plot_confusion_matrix(y_np, rf_preds, "Random Forest", GRAPHS_DIR)
+    
+    results.append(evaluate_model(y_np, xgb_preds, "XGBoost (5-fold CV)"))
+    plot_confusion_matrix(y_np, xgb_preds, "XGBoost", GRAPHS_DIR)
+    
+    results.append(evaluate_model(y_np, svm_preds, "SVM Linear (5-fold CV)"))
+    plot_confusion_matrix(y_np, svm_preds, "SVM", GRAPHS_DIR)
+    
+    if np.any(lr_preds):
+        results.append(evaluate_model(y_np, lr_preds, "Logistic Reg. Scratch (5-fold CV)"))
+        plot_confusion_matrix(y_np, lr_preds, "Logistic Reg. (Scratch)", GRAPHS_DIR)
 
     return results
-
 
 # ── Main ─────────────────────────────────────────────────────────────────── #
 def main() -> None:
@@ -190,8 +205,18 @@ def main() -> None:
     # Step 1: Features
     print(f"\n[1/{TOTAL_STEPS}] Loading / building features …")
     df_feat = build_features(rebuild=args.rebuild_features)
-    X = df_feat.drop(["url", "label"], axis=1)
+    
+    # Check if raw url column was retained (needed for fold-isolated TF-IDF)
+    if "url" not in df_feat.columns:
+        print("  Reloading raw URLs for strict cross-validation TF-IDF fitting...")
+        df_urls = pd.read_csv(URLS_CSV)
+        urls = clean_data(df_urls)["url"]
+    else:
+        urls = df_feat["url"]
+        
+    X = df_feat.drop(["url", "label"], axis=1, errors='ignore')
     y = df_feat["label"]
+    
     print(f"\n  Dataset summary:")
     print(f"    Rows     : {len(y):,}")
     print(f"    Features : {X.shape[1]}")
@@ -214,7 +239,7 @@ def main() -> None:
     if not args.no_cv:
         print(f"\n[{3 if not args.cv_only else 2}/{TOTAL_STEPS}] "
               f"Running {args.cv_folds}-fold stratified CV …")
-        results    = run_cross_validation(X, y, n_splits=args.cv_folds)
+        results    = run_cross_validation(X, y, urls, n_splits=args.cv_folds)
         results_df = pd.DataFrame(results)
         plot_metrics(results_df, GRAPHS_DIR)
         save_metrics_to_csv(results, GRAPHS_DIR, "metrics_summary.csv")
