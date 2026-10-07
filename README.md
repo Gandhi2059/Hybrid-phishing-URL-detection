@@ -1,250 +1,156 @@
-# PhishDetect 🛡️
+# PhishDetect
 
-> **Hybrid ML + Rule-Based Phishing URL Detection** — IEEE Research Project
+Hybrid phishing URL detection using machine-learning features, heuristic rules, and explainable model output. The repository includes a FastAPI service, a React/Vite web interface, a Streamlit interface, and scripts for preparing data, training models, and producing evaluation figures.
 
-PhishDetect is a research-grade phishing URL detection system that fuses
-machine learning classifiers with a heuristic rule engine and SHAP-based
-explainable AI (XAI). It ships with a FastAPI backend, a React/Vite frontend,
-and a Streamlit diagnostic UI.
+## What It Does
 
----
+- Extracts URL length, punctuation and character counts, HTTPS/IP indicators, suspicious-keyword counts, character entropy, ratios, and character-level TF-IDF features.
+- Combines an XGBoost phishing probability with a rule-engine score. The default rule weight is `0.15`; the fused score is capped at `1.0` and classified at a `0.5` threshold.
+- Returns triggered rule explanations, optional SHAP feature contributions, and DNS-based domain status from the API.
+- Supports single-URL analysis and asynchronous batch scans.
 
-## Project Structure
+The rule engine assigns points for missing HTTPS, `@` in the URL, suspicious keywords, long URLs, IP addresses, and excess dots/subdomains. Treat results as research signals, not a substitute for security review.
 
-```
-phishing_detection_project/
-│
-├── src/                          # Core Python library (importable package)
-│   ├── __init__.py
-│   ├── preprocessing.py          # Data loading & cleaning
-│   ├── feature_engineering.py    # Lexical + security + TF-IDF features
-│   ├── rule_engine.py            # Heuristic rule-based URL scorer
-│   ├── hybrid_model.py           # ML + rules fusion with SHAP XAI
-│   ├── logistic_scratch.py       # Logistic regression from scratch (NumPy)
-│   └── evaluation.py             # Metrics, ROC/CM plots, CSV export
-│
-├── scripts/                      # Runnable pipeline scripts
-│   ├── prep_data.py              # Merge & deduplicate raw datasets → data/urls.csv
-│   ├── train_rf.py               # Train Random Forest
-│   ├── train_svm.py              # Train SVM (LinearSVC + calibration)
-│   ├── train_xgb.py              # Train XGBoost
-│   ├── train_all.py              # Train all models + 5-fold CV evaluation
-│   ├── run_pipeline.py           # Convenience alias for train_all.py
-│   └── get_acc.py                # Quick accuracy sanity-check
-│
-├── backend/                      # FastAPI REST API
-│   └── api.py
-│
-├── frontend/                     # React + Vite web interface
-│   ├── src/
-│   ├── package.json
-│   └── vite.config.js
-│
-├── data/                         # Raw and processed datasets (not committed)
-│   ├── phishing_site_urls.csv    # Source dataset 1
-│   ├── urldata.csv               # Source dataset 2
-│   ├── urls.csv                  # Merged canonical dataset (generated)
-│   └── features.csv              # Engineered features (generated)
-│
-├── models/                       # Trained model artifacts (not committed)
-│   ├── rf_model.pkl
-│   ├── svm_model.pkl
-│   ├── xgb_model.pkl
-│   └── tfidf_vectorizer.pkl
-│
-├── graphs/                       # Generated plots (PNG / SVG / PDF)
-│
-├── ieee_paper/                   # IEEE manuscript sections
-│   └── methodology.md
-│
-├── app.py                        # Streamlit UI (run from project root)
-├── start_software.sh             # One-command full-stack launcher
-├── requirements.txt
-├── .gitignore
-└── README.md
+## Repository Layout
+
+```text
+backend/       FastAPI application
+data/          datasets and generated feature tables
+frontend/      React 19 + Vite interface
+graphs/        evaluation outputs and research figures
+models/        trained model and TF-IDF artifacts
+scripts/       data, training, evaluation, and figure-generation scripts
+src/           feature engineering, rules, hybrid model, preprocessing, evaluation
+app.py         Streamlit interface
+kaggle_train.py  Kaggle-oriented training entry point
+start_software.sh  launcher for the API and web interface
 ```
 
----
+## Requirements
 
-## Quick Start
+- Python 3.10 or newer
+- Node.js and npm for the React frontend
+- Git
 
-### 1 — Set up the environment
+Install the Python dependencies from the project root:
 
 ```bash
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-### 2 — Prepare the data
+On Windows, activate the environment with `.venv\Scripts\activate`.
 
-```bash
-python scripts/prep_data.py
+## Model Files
+
+Trained model files are not included in a fresh clone. Download the artifacts from the [model files folder](https://drive.google.com/drive/folders/1t4vNpcFBsSUKFyJM1AHC3y-hvOp33VTm?usp=sharing) and put them in `models/`:
+
+```text
+models/xgb_model.pkl
+models/tfidf_vectorizer.pkl
 ```
 
-Merges `data/phishing_site_urls.csv` and `data/urldata.csv` into
-`data/urls.csv` (~550 k deduplicated rows).
+The API uses XGBoost and the TF-IDF vectorizer for detection. Random Forest and SVM artifacts are used by the evaluation scripts. Model pickles can depend on the Python and scikit-learn versions used to create them; use compatible versions when loading them. Without the expected artifacts, the API falls back to a dummy model and its output is not a meaningful phishing prediction.
 
-### 3 — Train all models
+## Run The Application
+
+Install frontend dependencies once:
 
 ```bash
-python scripts/train_all.py
+cd frontend
+npm install
+cd ..
 ```
 
-Flags:
-
-| Flag | Effect |
-|---|---|
-| `--rebuild-features` | Re-extract features from `data/urls.csv` |
-| `--cv-only` | Skip training; re-run CV on existing models |
-| `--no-cv` | Train only; skip cross-validation |
-| `--cv-folds N` | Use N-fold CV (default: 5) |
-
-### 4 — Launch the full-stack application
+Start the FastAPI backend and React frontend from the project root:
 
 ```bash
-chmod +x start_software.sh
 ./start_software.sh
 ```
 
-| Service | URL |
+Open the frontend at <http://127.0.0.1:5173> and the interactive API documentation at <http://127.0.0.1:8000/docs>. The launcher supports `--api-only` and `--ui-only` modes. It uses `fuser` to clear ports 8000 and 5173 before startup.
+
+To run only the Streamlit interface instead:
+
+```bash
+streamlit run app.py
+```
+
+Or start the API and frontend separately:
+
+```bash
+# From the project root
+uvicorn backend.api:app --host 127.0.0.1 --port 8000
+
+# In another terminal
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+## API
+
+### Detect one URL
+
+`POST /api/detect`
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/detect \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/login"}'
+```
+
+The response includes `prediction`, `final_score`, `ml_probability`, `rule_score`, `rule_details`, `xai_reasons`, and `threat_intel`.
+
+### Scan a batch
+
+Submit a list of URLs to `POST /api/scan_batch`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/scan_batch \
+  -H 'Content-Type: application/json' \
+  -d '{"urls":["https://example.com","http://suspicious.example/login"]}'
+```
+
+The response contains a `job_id`. Poll `GET /api/job/{job_id}` until its status is `completed` to retrieve results. `GET /api/health` returns the API health status.
+
+The API performs DNS resolution for domain enrichment and allows all CORS origins in its current configuration. Restrict CORS and review network access before exposing it outside a trusted development environment.
+
+## Data Preparation And Training
+
+The raw training CSVs are excluded from Git. To rebuild the training dataset, place these files under `data/`:
+
+- `phishing_site_urls.csv`, with `URL` and `Label` columns (`good`/`bad` labels)
+- `urldata.csv`, with `url` and `label` columns (`benign`/`malicious` labels)
+
+Then prepare the merged dataset and train/evaluate the models:
+
+```bash
+python scripts/prep_data.py
+python scripts/train_all.py
+```
+
+`prep_data.py` writes a deduplicated, shuffled `data/urls.csv`. `train_all.py` builds `data/features.csv` if needed, saves model artifacts under `models/`, and by default runs stratified 5-fold cross-validation and writes metrics/plots under `graphs/`.
+
+Useful options:
+
+| Command | Behavior |
 |---|---|
-| **FastAPI backend** | http://127.0.0.1:8000/docs |
-| **React frontend** | http://127.0.0.1:5173 |
+| `python scripts/train_all.py --rebuild-features` | Rebuild features from `data/urls.csv` |
+| `python scripts/train_all.py --no-cv` | Train models without cross-validation |
+| `python scripts/train_all.py --cv-only` | Run cross-validation without the full-data training step |
+| `python scripts/train_all.py --cv-folds 10` | Use 10 cross-validation folds |
+| `python scripts/evaluate_models.py --n-samples 10000` | Evaluate available models on a sample of `data/urls.csv` |
+| `python scripts/evaluate_models.py --full` | Evaluate available models on the full dataset |
 
-Or launch the **Streamlit UI** only:
+Training and full-dataset evaluation can require substantial memory and time. The scripts generate current metrics; results depend on the dataset, artifacts, and environment, so this README does not hard-code benchmark values.
 
-```bash
-streamlit run app.py
-```
+## Research And Project Files
 
-### 5 — Quick accuracy check
+- [Zenodo project archive](https://doi.org/10.5281/zenodo.23141305)
+- [Trained model files](https://drive.google.com/drive/folders/1t4vNpcFBsSUKFyJM1AHC3y-hvOp33VTm?usp=sharing)
+- `details.md`, `graphs/`, and the figure-generation scripts contain supporting methodology and research outputs.
 
-```bash
-python scripts/get_acc.py
-python scripts/get_acc.py --n-samples 5000
-```
+## License And Use
 
----
-
-## System Architecture
-
-```
-Raw CSVs  ──►  prep_data.py  ──►  urls.csv
-                                      │
-                              feature_engineering
-                                      │
-                              features.csv (cache)
-                                      │
-         ┌────────────────────────────┼──────────────────┐
-         │                            │                  │
-     train_rf.py               train_xgb.py         train_svm.py
-         │                            │                  │
-     rf_model.pkl             xgb_model.pkl        svm_model.pkl
-                                      │
-                          HybridPhishingModel
-                         ┌─────────────────────┐
-                         │ ML probability       │
-                         │ + RuleEngine score   │  ──► final_score
-                         │ + SHAP XAI reasons   │
-                         └─────────────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    │                 │                  │
-              FastAPI API       Streamlit UI       React Frontend
-```
-
----
-
-## Hybrid Fusion Formula
-
-```
-hybrid_prob = min(ml_prob + rule_score × rule_weight, 1.0)
-```
-
-- `ml_prob` — P(phishing) from XGBoost (default serving model)  
-- `rule_score` — integer penalty from the RuleEngine (0–20)  
-- `rule_weight` — 0.15 (empirically chosen; see `details.md` §4)
-
----
-
-## Models & Performance (5-fold Stratified CV)
-
-| Model | Accuracy | Precision | Recall | F1 | AUC |
-|---|---|---|---|---|---|
-| XGBoost | ~0.967 | ~0.968 | ~0.967 | ~0.967 | ~0.992 |
-| Random Forest | ~0.963 | ~0.964 | ~0.963 | ~0.963 | ~0.990 |
-| SVM (LinearSVC) | ~0.958 | ~0.959 | ~0.958 | ~0.958 | — |
-| Logistic Reg. (scratch) | ~0.931 | ~0.931 | ~0.931 | ~0.931 | — |
-
-> Exact values depend on dataset split and environment. Check `graphs/metrics_summary.csv` after training.
-
----
-
-## API Reference
-
-### `POST /api/detect`
-
-```json
-{ "url": "http://secure-login.bank-update.com" }
-```
-
-**Response:**
-
-```json
-{
-  "url": "...",
-  "prediction": "Phishing",
-  "final_score": 0.94,
-  "ml_probability": 0.87,
-  "rule_score": 5.0,
-  "rule_details": ["No HTTPS (+2)", "Keyword 'login' (+2)", "Keyword 'bank' (+2)"],
-  "xai_reasons": ["Url Length (SHAP: +0.21)", "Has Https (SHAP: +0.18)"],
-  "threat_intel": { "dns_resolves": false, "domain_intel": "DNS resolution failed" }
-}
-```
-
-### `POST /api/scan_batch`
-
-```json
-{ "urls": ["http://phish.example.com", "https://google.com"] }
-```
-
-Returns `{ "job_id": "...", "status": "processing", "queued_count": 2 }`.
-Poll with `GET /api/job/{job_id}`.
-
----
-
-## Development
-
-```bash
-# Run backend with auto-reload
-uvicorn backend.api:app --reload
-
-# Run Streamlit UI
-streamlit run app.py
-
-# Run frontend dev server
-cd frontend && npm run dev
-```
-
----
-##
-The link for the models:
-https://drive.google.com/drive/folders/1t4vNpcFBsSUKFyJM1AHC3y-hvOp33VTm?usp=sharing
-
-## Research Context
-
-This project is developed for an IEEE conference/journal paper on
-hybrid phishing URL detection. 
-
-## Dataset and Project Archive
-
-https://doi.org/10.5281/zenodo.23141305
-
-
----
-
-## License
-
-Academic / research use only. Not licensed for commercial deployment.
+Academic/research use only. Not licensed for commercial deployment. This project is a research prototype and should not be treated as a production security service.
